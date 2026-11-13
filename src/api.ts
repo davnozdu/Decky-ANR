@@ -56,3 +56,24 @@ export const readGameLog = callable<[appid: string, lines: number], Result & { l
   "read_game_log"
 );
 export const logError = callable<[string], void>("log_error");
+
+export type UpdateInfo = Result & {
+  checked_at?: string;
+  errors?: string[];
+  anr_latest?: string | null;
+  anr_update?: boolean;
+  anr_notes_url?: string;
+  plugin_current?: string;
+  plugin_latest?: string | null;
+  plugin_update?: boolean;
+  plugin_url?: string;
+  plugin_hash?: string;
+  plugin_notes_url?: string;
+};
+
+export const checkUpdates = callable<[force: boolean], UpdateInfo>("check_updates");
+export const listOutdatedGames = callable<
+  [],
+  Result & { games: { appid: string; name: string; version: string }[]; active_version?: string | null }
+>("list_outdated_games");
+export const updateAllGames = callable<[], Result & { updated?: string[]; skipped?: string[] }>("update_all_games");

@@ -1,4 +1,4 @@
-import { definePlugin, toaster } from "@decky/api";
+import { addEventListener, definePlugin, removeEventListener, toaster } from "@decky/api";
 import {
   ButtonItem,
   DropdownItem,
@@ -13,18 +13,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MdAutoAwesome } from "react-icons/md";
 import {
   AnrInfo,
+  checkUpdates,
   GameEntry,
   GameStatus,
   getAnrInfo,
   getGameStatus,
   installBundled,
   listGames,
+  listOutdatedGames,
   patchGame,
   readGameLog,
   setActiveVersion,
   setGameSetting,
   unpatchGame,
+  updateAllGames,
   updateFromGithub,
+  UpdateInfo,
 } from "./api";
 import { copyText, getLaunchOptions, setLaunchOptions } from "./steam";
 
@@ -41,8 +45,36 @@ let rememberedAppId = "";
 
 // ─── ANR FG package section ──────────────────────────────────────────────────
 
+declare const DeckyBackend: { call: (route: string, ...args: unknown[]) => Promise<unknown> };
+const INSTALL_TYPE_UPDATE = 2;
+
+const banner = (color: string): React.CSSProperties => ({
+  ...small,
+  opacity: 1,
+  padding: "8px",
+  borderRadius: "6px",
+  background: color,
+});
+
 function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [updates, setUpdates] = useState<UpdateInfo | null>(null);
+  const [outdated, setOutdated] = useState<{ appid: string; name: string; version: string }[]>([]);
+
+  const loadUpdates = useCallback(async (force: boolean) => {
+    try {
+      setUpdates(await checkUpdates(force));
+    } catch (e) {
+      setUpdates({ status: "error", message: errorText(e) });
+    }
+    try {
+      setOutdated((await listOutdatedGames()).games || []);
+    } catch {
+      setOutdated([]);
+    }
+  }, []);
+
+  useEffect(() => void loadUpdates(false), [loadUpdates, info?.version]);
 
   const run = async (label: string, fn: () => Promise<{ status: string; message?: string }>) => {
     setBusy(label);
@@ -54,11 +86,55 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
     } finally {
       setBusy(null);
       await reload();
+      await loadUpdates(false);
     }
   };
 
+  const updatePlugin = async () => {
+    if (!updates?.plugin_url) return;
+    try {
+      // Decky shows its own confirmation and reloads the plugin after installing.
+      await DeckyBackend.call(
+        "utilities/install_plugin",
+        updates.plugin_url,
+        "Decky ANR",
+        updates.plugin_latest,
+        updates.plugin_hash || false,
+        INSTALL_TYPE_UPDATE
+      );
+    } catch (e) {
+      toast(`Plugin update failed: ${errorText(e)}`);
+    }
+  };
+
+  const checkedAt = updates?.checked_at ? new Date(updates.checked_at).toLocaleString() : null;
+
   return (
     <PanelSection title="ANR FG">
+      {updates?.plugin_update && (
+        <>
+          <PanelSectionRow>
+            <div style={banner("rgba(88,166,255,0.18)")}>
+              <b>Decky ANR {updates.plugin_latest}</b> is out (you have {updates.plugin_current}).
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={updatePlugin}>
+              Update the plugin to {updates.plugin_latest}
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
+
+      {updates?.anr_update && (
+        <PanelSectionRow>
+          <div style={banner("rgba(255,216,102,0.18)")}>
+            <b>New ANR FG {updates.anr_latest}</b> is out (you have {info?.version ?? "none"}). Download it below,
+            then update your games.
+          </div>
+        </PanelSectionRow>
+      )}
+
       <PanelSectionRow>
         <Field label="Package" focusable>
           {info === null ? "…" : info.installed ? info.version : <span style={{ color: "#ffd866" }}>not set up</span>}
@@ -73,9 +149,30 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
       )}
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("update", updateFromGithub)}>
-          {busy === "update" ? "Checking GitHub…" : "Get the newest release"}
+          {busy === "update"
+            ? "Downloading…"
+            : updates?.anr_update
+            ? `Download ANR FG ${updates.anr_latest}`
+            : "Get the newest release"}
         </ButtonItem>
       </PanelSectionRow>
+
+      {outdated.length > 0 && (
+        <>
+          <PanelSectionRow>
+            <div style={banner("rgba(255,216,102,0.12)")}>
+              {outdated.length === 1 ? "1 game uses" : `${outdated.length} games use`} an older ANR FG:{" "}
+              {outdated.map((g) => `${g.name} (${g.version})`).join(", ")}
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("games", updateAllGames)}>
+              {busy === "games" ? "Updating games…" : `Update ${outdated.length === 1 ? "it" : "all"} to ${info?.version}`}
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
+
       {info?.versions && info.versions.length > 1 && (
         <PanelSectionRow>
           <DropdownItem
@@ -84,6 +181,29 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
             rgOptions={[...info.versions].reverse().map((v) => ({ data: v, label: v }))}
             onChange={(o) => run("version", () => setActiveVersion(String(o.data)))}
           />
+        </PanelSectionRow>
+      )}
+
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("check", async () => {
+          const r = await checkUpdates(true);
+          setUpdates(r);
+          if (r.status !== "success") return r;
+          const parts = [
+            r.anr_update ? `ANR FG ${r.anr_latest} is out` : `ANR FG: ${r.anr_latest ?? "?"} is the newest`,
+            r.plugin_update ? `plugin ${r.plugin_latest} is out` : "plugin is up to date",
+          ];
+          return { status: "success", message: parts.join("; ") + (r.errors?.length ? ` (${r.errors.join("; ")})` : "") };
+        })}>
+          {busy === "check" ? "Checking…" : "Check for updates"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {checkedAt && (
+        <PanelSectionRow>
+          <div style={small}>
+            Checked {checkedAt}; automatic check every 6 hours.
+            {updates?.errors?.length ? ` Last error: ${updates.errors[0]}` : ""}
+          </div>
         </PanelSectionRow>
       )}
     </PanelSection>
@@ -482,10 +602,23 @@ function Content() {
   );
 }
 
-export default definePlugin(() => ({
-  name: TITLE,
-  titleView: <div>{TITLE}</div>,
-  content: <Content />,
-  icon: <MdAutoAwesome />,
-  onDismount() {},
-}));
+export default definePlugin(() => {
+  // The backend checks GitHub at start and every 6 hours and emits this once per new version.
+  const onUpdate = (kind: string, version: string) => {
+    toast(
+      kind === "plugin"
+        ? `Decky ANR ${version} is out: open the plugin to update.`
+        : `ANR FG ${version} is out: open Decky ANR to download it.`
+    );
+  };
+  const listener = addEventListener<[string, string]>("anr_update_available", onUpdate);
+  return {
+    name: TITLE,
+    titleView: <div>{TITLE}</div>,
+    content: <Content />,
+    icon: <MdAutoAwesome />,
+    onDismount() {
+      removeEventListener("anr_update_available", listener);
+    },
+  };
+});

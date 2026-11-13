@@ -24,6 +24,11 @@ import decky
 
 GITHUB_REPO = "apex-compute/ANR"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+PLUGIN_REPO = "davnozdu/Decky-ANR"
+PLUGIN_API_LATEST = f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
+PLUGIN_ASSET = "Decky.ANR.zip"
+UPDATE_CHECK_INTERVAL = 6 * 3600
+UPDATE_CHECK_FIRST_DELAY = 30
 USER_AGENT = "decky-anr"
 CA_BUNDLES = [
     "/etc/ssl/certs/ca-certificates.crt",
@@ -75,9 +80,135 @@ class Plugin:
             await asyncio.to_thread(self._ensure_bundled_package)
         except Exception as exc:
             decky.logger.error(f"[ANR] could not set up the bundled package: {exc}")
+        self._update_task = asyncio.get_event_loop().create_task(self._update_loop())
 
     async def _unload(self):
+        task = getattr(self, "_update_task", None)
+        if task:
+            task.cancel()
         decky.logger.info("[ANR] plugin unloaded")
+
+    # ── Update checks ─────────────────────────────────────────────────────────
+
+    def _plugin_version(self) -> str:
+        return str(getattr(decky, "DECKY_PLUGIN_VERSION", "") or "0")
+
+    def _check_updates_sync(self) -> dict:
+        info: dict = {"checked_at": datetime.now(timezone.utc).isoformat(), "errors": []}
+        installed = self._installed_versions()
+        newest_installed = installed[-1] if installed else ""
+        try:
+            release = json.loads(self._http_get(GITHUB_API_LATEST, "application/vnd.github+json"))
+            latest = None
+            for asset in release.get("assets", []):
+                m = PACKAGE_RE.match(asset.get("name", ""))
+                if m and m["kind"] == "full":
+                    latest = m["version"]
+            info["anr_latest"] = latest
+            info["anr_update"] = bool(latest) and _version_key(latest) > _version_key(newest_installed)
+            info["anr_notes_url"] = release.get("html_url")
+        except Exception as exc:
+            info["errors"].append(f"ANR FG: {exc}")
+        try:
+            release = json.loads(self._http_get(PLUGIN_API_LATEST, "application/vnd.github+json"))
+            tag = str(release.get("tag_name") or "").lstrip("vV")
+            asset = next((a for a in release.get("assets", []) if a.get("name") == PLUGIN_ASSET), None)
+            info["plugin_current"] = self._plugin_version()
+            info["plugin_latest"] = tag or None
+            info["plugin_update"] = bool(tag and asset) and _version_key(tag) > _version_key(self._plugin_version())
+            if asset:
+                info["plugin_url"] = asset.get("browser_download_url")
+                digest = str(asset.get("digest") or "")
+                info["plugin_hash"] = digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
+            info["plugin_notes_url"] = release.get("html_url")
+        except Exception as exc:
+            info["errors"].append(f"plugin: {exc}")
+        state = self._load_state()
+        state["updates"] = info
+        self._save_state(state)
+        return info
+
+    async def _update_loop(self):
+        await asyncio.sleep(UPDATE_CHECK_FIRST_DELAY)
+        while True:
+            try:
+                info = await asyncio.to_thread(self._check_updates_sync)
+                state = self._load_state()
+                notified = state.setdefault("notified", {})
+                changed = False
+                if info.get("anr_update") and notified.get("anr") != info.get("anr_latest"):
+                    await decky.emit("anr_update_available", "anr", info.get("anr_latest"))
+                    notified["anr"] = info.get("anr_latest")
+                    changed = True
+                if info.get("plugin_update") and notified.get("plugin") != info.get("plugin_latest"):
+                    await decky.emit("anr_update_available", "plugin", info.get("plugin_latest"))
+                    notified["plugin"] = info.get("plugin_latest")
+                    changed = True
+                if changed:
+                    self._save_state(state)
+                if info.get("errors"):
+                    decky.logger.info(f"[ANR] update check: {info['errors']}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                decky.logger.error(f"[ANR] update loop: {exc}")
+            await asyncio.sleep(UPDATE_CHECK_INTERVAL)
+
+    async def check_updates(self, force: bool = False) -> dict:
+        try:
+            cached = self._load_state().get("updates") or {}
+            fresh = False
+            if cached.get("checked_at"):
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["checked_at"])
+                fresh = age.total_seconds() < 3600
+            info = cached if (fresh and not force) else await asyncio.to_thread(self._check_updates_sync)
+            # Re-evaluate against what is installed now (a download may have happened since).
+            installed = self._installed_versions()
+            if info.get("anr_latest"):
+                info["anr_update"] = _version_key(info["anr_latest"]) > _version_key(installed[-1] if installed else "")
+            info["plugin_current"] = self._plugin_version()
+            if info.get("plugin_latest"):
+                info["plugin_update"] = bool(info.get("plugin_url")) and (
+                    _version_key(info["plugin_latest"]) > _version_key(self._plugin_version()))
+            return {"status": "success", **info}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] check_updates: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _outdated_games(self) -> list[dict]:
+        active = self._active_version()
+        result = []
+        for appid, entry in self._load_state().get("games", {}).items():
+            if entry.get("version") and active and entry["version"] != active:
+                result.append({"appid": appid, "name": entry.get("name", appid), "version": entry["version"]})
+        return result
+
+    async def list_outdated_games(self) -> dict:
+        try:
+            return {"status": "success", "games": self._outdated_games(), "active_version": self._active_version()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "games": []}
+
+    def _update_all(self) -> dict:
+        updated, skipped = [], []
+        for game in self._outdated_games():
+            info = self._game(game["appid"])
+            if not info or self._is_running(info):
+                skipped.append(f"{game['name']} (running)" if info else game["name"])
+                continue
+            entry = self._load_state()["games"].get(game["appid"], {})
+            # The proxy and launch options stay the same; install.sh replaces ANR FG and OptiScaler in place.
+            r = self._patch(game["appid"], "", entry.get("target_dir", ""))
+            (updated if r.get("status") == "success" else skipped).append(game["name"])
+        msg = f"Updated: {', '.join(updated) or 'none'}" + (f". Skipped: {', '.join(skipped)}" if skipped else "")
+        return {"status": "success", "updated": updated, "skipped": skipped, "message": msg}
+
+    async def update_all_games(self) -> dict:
+        try:
+            return await asyncio.to_thread(self._update_all)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] update_all_games: {exc}")
+            return {"status": "error", "message": str(exc)}
 
     async def _uninstall(self):
         decky.logger.info("[ANR] plugin uninstalled; games keep ANR FG until they are unpatched")

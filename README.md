@@ -24,6 +24,9 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
 - Shows which Proton the game runs on (per-game Steam Play setting or the Steam default, and the prefix version);
   warns about native Linux builds, which cannot use ANR FG.
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
+- **Update notifications**: checks GitHub at start and every 6 hours; a Steam toast and a banner tell you when a new
+  ANR FG release or a new Decky ANR version is out. ANR FG downloads in one click (SHA256-checked), the plugin
+  updates through Decky's own installer, and **Update all** brings every patched game to the new ANR FG.
 - Shows when a game has an older ANR FG than the selected package and updates it in one click.
 
 ## Usage
