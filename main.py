@@ -1458,8 +1458,8 @@ class Plugin:
         self._save_state(state)
         if ratio:
             return {"status": "success", "message": f"Render quality: {label} (1/{ratio} of the output size, "
-                                                    "whatever the game's DLSS mode). Restart the game."}
-        return {"status": "success", "message": "Render quality follows the game's DLSS mode. Restart the game."}
+                                                    "whatever the game's DLSS mode). Applies at the game's next start."}
+        return {"status": "success", "message": "Render quality follows the game's DLSS mode from the next start."}
 
     async def set_render_quality(self, appid: str, choice: str) -> dict:
         try:
@@ -1468,8 +1468,6 @@ class Plugin:
             game = self._game(str(appid))
             if not game:
                 return {"status": "error", "message": "The game is not in the Steam library."}
-            if self._is_running(game):
-                return {"status": "error", "message": "Close the game first."}
             target = self._resolve_target(game, self._load_state()["games"].get(str(appid)))
             if not target:
                 return {"status": "error", "message": "ANR FG is not installed in this game."}
@@ -1584,8 +1582,7 @@ class Plugin:
             if key not in self.OPTI_SETTINGS:
                 return {"status": "error", "message": f"Unknown setting {key}"}
             game = self._game(appid)
-            if game and self._is_running(game):
-                return {"status": "error", "message": "Close the game first: OptiScaler reads its settings at start."}
+            running = bool(game and self._is_running(game))
             val = self._normalize_opti(key, value)
             await asyncio.to_thread(self._apply_opti, appid, {key: val})
             state = self._load_state()
@@ -1596,7 +1593,8 @@ class Plugin:
             else:
                 opti[key] = val
             self._save_state(state)
-            return {"status": "success", "message": f"{key} = {val}. Restart the game to apply."}
+            when = "at the game's next start" if running else "when the game starts"
+            return {"status": "success", "message": f"Saved; applies {when}."}
         except Exception as exc:
             decky.logger.error(f"[ANR] set_opti_setting {appid} {key}: {exc}")
             return {"status": "error", "message": str(exc)}

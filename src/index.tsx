@@ -361,13 +361,18 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   };
 
   const changeOpti = async (key: string, value: string) => {
+    const before = opti[key];
     setOpti((cur) => ({ ...cur, [key]: value }));
+    let ok = false;
     try {
       const r = await setOptiSetting(appid, key, value);
-      if (r.status !== "success") toast(r.message || "Failed.");
+      ok = r.status === "success";
+      if (!ok) toast(r.message || "Failed.");
+      else if (status?.running) toast("Saved: applies at the game's next start.");
     } catch (e) {
       toast(errorText(e));
     }
+    if (!ok) setOpti((cur) => ({ ...cur, [key]: before ?? "auto" }));
   };
 
   const profileAction = async (fn: () => Promise<{ status: string; message?: string }>) => {
