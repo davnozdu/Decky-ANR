@@ -47,7 +47,7 @@ Games patched by Decky Framegen must be unpatched there first: its OptiScaler 0.
 
 | Device | OS / Proton | Game | Result |
 |---|---|---|---|
-| ROG Xbox Ally X (Ryzen AI Z2 Extreme, Radeon 890M) | CachyOS Handheld, proton-cachyos 11.0 | Forza Horizon 6 (D3D12, Streamline DLSS-G) | Works: 2X at 1920x1080, ~31 real FPS → ~63 shown, coopmat path, ~2–4 ms GPU per generated frame, 0 generation errors |
+| ROG Xbox Ally X (Ryzen AI Z2 Extreme, Radeon 890M) | CachyOS Handheld, proton-cachyos 11.0 | Forza Horizon 6 (D3D12, Streamline DLSS-G) | Works: 2X at 1920x1080, ~40–43 real FPS → ~80–86 shown (10 min of driving), ANR ~6.0–6.4 ms GPU per real frame, 0 generation errors |
 
 Test kit on the same device (ANR FG V.B15, 2X, ms per real frame, lower is better; dB vs reference, higher is better):
 
@@ -59,7 +59,9 @@ Test kit on the same device (ANR FG V.B15, 2X, ms per real frame, lower is bette
 
 Notes:
 - Frame generation starts when gameplay starts (menus may not use it); the game may re-create it on scene changes.
-- Frame generation feels best with 40+ real FPS: raise or remove the game's own frame-rate cap.
+- In-game, portable-linalg vs coopmat was ~6.0 vs ~6.4 ms per real frame: the game's own rendering bounds the
+  frame rate, so the kit's 24% shows as a small in-game gain.
+- Frame generation feels best with 40+ real FPS.
 - OptiScaler logging is off in ANR's `OptiScaler.ini` (`LogLevel=5`); set `LogLevel=2` for `OptiScaler.log`.
 
 ## Build

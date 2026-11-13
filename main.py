@@ -1073,24 +1073,43 @@ class Plugin:
     _RE_MEDIANS = re.compile(
         r"GPU ms \(medians[^)]*\): frame in ([\d.]+) pair ([\d.]+), per generated frame phase ([\d.]+) "
         r"out ([\d.]+), (\d+)X \((\d+) generated evaluations, (\d+) generation errors\)")
-    _RE_INTERVAL = re.compile(r", ([\d.]+) ms after the previous evaluate")
+
+    @staticmethod
+    def _log_seconds(line: str) -> float | None:
+        m = re.match(r"\[(\d+):(\d+):(\d+(?:\.\d+)?)\]", line)
+        return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
 
     def _parse_session(self, log: Path) -> dict | None:
+        """One game launch: the path, ANR's GPU cost from its medians, and the real frame rate from how many
+        frames it generated while frame generation ran (each feature from 'ready' to its last medians line)."""
         paths: list[str] = []
         res = None
         pairs: list[float] = []
         gens: list[float] = []
-        intervals: list[float] = []
         mult = None
-        evaluations = 0
         errors = 0
-        session_errors = 0
+        feature_start = None
+        feature_last: tuple[float, int] | None = None
+        gen_total = 0
+        seconds_total = 0.0
+
+        def close_feature() -> None:
+            nonlocal gen_total, seconds_total, feature_last
+            if feature_start is not None and feature_last is not None:
+                dt = feature_last[0] - feature_start
+                if dt > 10:  # skip short menu blips
+                    gen_total += feature_last[1]
+                    seconds_total += dt
+            feature_last = None
+
         try:
             with open(log, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     m = self._RE_READY.search(line)
                     if m:
+                        close_feature()
                         paths.append(m.group(2))
+                        feature_start = self._log_seconds(line)
                         continue
                     m = self._RE_FEATURE.search(line)
                     if m:
@@ -1103,25 +1122,24 @@ class Plugin:
                             pairs.append(pair)
                             gens.append(phase + out)
                         mult = int(m.group(5))
-                        if "final" in line:
-                            evaluations += int(m.group(6))
-                            session_errors += int(m.group(7))
                         errors = max(errors, int(m.group(7)))
-                        continue
-                    m = self._RE_INTERVAL.search(line)
-                    if m:
-                        v = float(m.group(1))
-                        if 5.0 < v < 100.0:  # skip pauses and loading screens
-                            intervals.append(v)
+                        t = self._log_seconds(line)
+                        if t is not None and feature_start is not None:
+                            feature_last = (t, int(m.group(6)))
+                        if "final" in line:
+                            close_feature()
+                            feature_start = None
+            close_feature()
         except OSError:
             return None
         if not paths:
             return None
         med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
-        interval = med(intervals)
-        real_fps = round(1000.0 / interval, 1) if interval else None
         gen = med(gens)
         pair = med(pairs)
+        real_fps = None
+        if seconds_total > 0 and mult and mult > 1:
+            real_fps = round(gen_total / (mult - 1) / seconds_total, 1)
         return {
             "log": log.name,
             "started": log.stem.replace("nr_fg-", ""),
@@ -1133,8 +1151,9 @@ class Plugin:
             "total_ms": round(pair + gen * (mult - 1), 2) if pair is not None and gen is not None and mult else None,
             "real_fps": real_fps,
             "shown_fps": round(real_fps * mult, 1) if real_fps and mult else None,
-            "evaluations": evaluations,
-            "errors": max(errors, session_errors),
+            "seconds": round(seconds_total),
+            "evaluations": gen_total,
+            "errors": errors,
             "samples": len(pairs),
         }
 
