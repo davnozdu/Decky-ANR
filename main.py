@@ -1,0 +1,933 @@
+"""Decky ANR: installs and manages ANR FG (Apex Neural Rendering frame generation) for Proton games.
+
+ANR FG ships as a DLSS-G replacement (nvngx_dlssg.dll) loaded through OptiScaler. This backend keeps the
+official ANR FG packages (bundled in bin/ or downloaded from GitHub releases), runs their own install.sh and
+uninstall.sh for each game and edits nr_fg.ini. The frontend sets the Steam launch options.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+import decky
+
+GITHUB_REPO = "apex-compute/ANR"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+USER_AGENT = "decky-anr"
+CA_BUNDLES = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+]
+
+ANR_DIR_NAME = "Apex Neural Rendering FG"
+LEGACY_ANR_DIR_NAME = "nrfg"
+INSTALL_RECORD = "nr_fg_install.json"
+FRAMEGEN_MARKER = "FRAMEGEN_PATCH"
+
+PACKAGE_RE = re.compile(r"^anr-fg-(?P<version>.+)-(?P<kind>full|addon)\.zip$")
+
+# Files a user-installed OptiScaler may be loaded as; checked for FGNvngxReplacement support (add-on mode).
+OPTISCALER_PROXY_NAMES = [
+    "dxgi.dll", "winmm.dll", "version.dll", "dbghelp.dll", "wininet.dll", "winhttp.dll",
+    "d3d12.dll", "OptiScaler.asi", "OptiScaler.dll",
+]
+
+BAD_EXE_SUBSTRINGS = [
+    "crashreport", "crashhandler", "eac", "easyanticheat", "beclient", "eosbootstrap", "benchmark",
+    "uninstall", "unins0", "setup", "launcher", "updater", "bootstrap", "_redist", "redist", "prereq",
+    "vc_redist", "dxsetup", "dotnet", "unitycrashhandler", "quicksfv", "touchup", "cefprocess",
+    "crashpad", "installer", "redistributable", "server.exe", "helper", "reporter",
+]
+
+NR_FG_SETTINGS = {
+    "max_generated": {"type": "int", "min": 1, "max": 5},
+    "path": {
+        "type": "enum",
+        "values": ["auto", "coopmat", "packed", "dp4a", "portable", "portable-linalg", "portable-xmx"],
+    },
+    "scene_cut": {"type": "enum", "values": ["0", "1"]},
+}
+
+
+def _version_key(version: str) -> tuple:
+    return tuple(int(n) for n in re.findall(r"\d+", version or ""))
+
+
+class Plugin:
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async def _main(self):
+        decky.logger.info("[ANR] plugin loaded")
+        try:
+            await asyncio.to_thread(self._ensure_bundled_package)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] could not set up the bundled package: {exc}")
+
+    async def _unload(self):
+        decky.logger.info("[ANR] plugin unloaded")
+
+    async def _uninstall(self):
+        decky.logger.info("[ANR] plugin uninstalled; games keep ANR FG until they are unpatched")
+
+    # ── Paths and state ───────────────────────────────────────────────────────
+
+    def _runtime_dir(self) -> Path:
+        return Path(decky.DECKY_PLUGIN_RUNTIME_DIR)
+
+    def _packages_dir(self) -> Path:
+        return self._runtime_dir() / "packages"
+
+    def _state_path(self) -> Path:
+        return Path(decky.DECKY_PLUGIN_SETTINGS_DIR) / "state.json"
+
+    def _load_state(self) -> dict:
+        try:
+            with open(self._state_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault("games", {})
+                return data
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            decky.logger.error(f"[ANR] state.json unreadable: {exc}")
+        return {"active_version": None, "games": {}}
+
+    def _save_state(self, state: dict) -> None:
+        path = self._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, path)
+
+    def _home(self) -> Path:
+        return Path(str(decky.HOME))
+
+    # ── Packages ──────────────────────────────────────────────────────────────
+
+    def _package_dir(self, version: str, kind: str) -> Path:
+        return self._packages_dir() / version / kind
+
+    def _installed_versions(self) -> list[str]:
+        root = self._packages_dir()
+        if not root.exists():
+            return []
+        versions = [p.name for p in root.iterdir() if (p / "full" / "install.sh").exists()]
+        return sorted(versions, key=_version_key)
+
+    def _active_version(self) -> str | None:
+        state = self._load_state()
+        active = state.get("active_version")
+        installed = self._installed_versions()
+        if active in installed:
+            return active
+        return installed[-1] if installed else None
+
+    def _safe_extract(self, archive: Path, dest: Path) -> None:
+        tmp = dest.with_name(dest.name + ".partial")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        root = tmp.resolve()
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.infolist():
+                target = (tmp / member.filename).resolve()
+                if root != target and root not in target.parents:
+                    raise ValueError(f"unsafe path in {archive.name}: {member.filename}")
+            zf.extractall(tmp)
+        for script in tmp.glob("*.sh"):
+            script.chmod(0o755)
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(tmp, dest)
+
+    def _add_package(self, version: str, kind: str, archive: Path) -> None:
+        dest = self._package_dir(version, kind)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._safe_extract(archive, dest)
+        if not (dest / "install.sh").exists():
+            shutil.rmtree(dest, ignore_errors=True)
+            raise ValueError(f"{archive.name} has no install.sh")
+        decky.logger.info(f"[ANR] package {version} {kind} ready in {dest}")
+
+    def _bundled_archives(self) -> dict[str, dict[str, Path]]:
+        found: dict[str, dict[str, Path]] = {}
+        bin_dir = Path(decky.DECKY_PLUGIN_DIR) / "bin"
+        if bin_dir.exists():
+            for archive in bin_dir.glob("anr-fg-*.zip"):
+                m = PACKAGE_RE.match(archive.name)
+                if m:
+                    found.setdefault(m["version"], {})[m["kind"]] = archive
+        return found
+
+    def _ensure_bundled_package(self) -> str | None:
+        bundled = self._bundled_archives()
+        installed = set(self._installed_versions())
+        for version, kinds in bundled.items():
+            if version in installed:
+                continue
+            for kind, archive in kinds.items():
+                self._add_package(version, kind, archive)
+        state = self._load_state()
+        versions = self._installed_versions()
+        if versions and state.get("active_version") not in versions:
+            state["active_version"] = versions[-1]
+            self._save_state(state)
+        elif bundled and versions:
+            newest_bundled = max(bundled, key=_version_key)
+            if _version_key(newest_bundled) > _version_key(state.get("active_version") or ""):
+                state["active_version"] = newest_bundled
+                self._save_state(state)
+        return self._active_version()
+
+    def _package_info(self, version: str | None) -> dict:
+        if not version:
+            return {}
+        try:
+            with open(self._package_dir(version, "full") / "nr_fg_package.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        # Decky's bundled Python has no CA store of its own: use the system's bundle.
+        for cafile in CA_BUNDLES:
+            if os.path.exists(cafile):
+                return ssl.create_default_context(cafile=cafile)
+        return ssl.create_default_context()
+
+    def _http_get(self, url: str, accept: str = "application/octet-stream") -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self._ssl_context()) as resp:
+                return resp.read()
+        except Exception as exc:
+            curl = shutil.which("curl") or ("/usr/bin/curl" if os.path.exists("/usr/bin/curl") else None)
+            if not curl:
+                raise
+            decky.logger.info(f"[ANR] urllib failed ({exc}); retrying with curl")
+            env = dict(os.environ)
+            env.pop("LD_LIBRARY_PATH", None)
+            proc = subprocess.run(
+                [curl, "-fsSL", "--max-time", "300", "-A", USER_AGENT, "-H", f"Accept: {accept}", url],
+                capture_output=True, timeout=320, env=env,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(f"curl: {proc.stderr.decode('utf-8', 'replace').strip()}") from exc
+            return proc.stdout
+
+    def _download_latest(self) -> dict:
+        release = json.loads(self._http_get(GITHUB_API_LATEST, "application/vnd.github+json"))
+        assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
+        wanted: dict[str, tuple[str, str]] = {}
+        for name, url in assets.items():
+            m = PACKAGE_RE.match(name)
+            if m:
+                wanted[m["kind"]] = (name, url)
+                version = m["version"]
+        if "full" not in wanted:
+            raise ValueError(f"release {release.get('tag_name')} has no anr-fg-*-full.zip")
+        if version in self._installed_versions():
+            return {"version": version, "downloaded": False}
+        sums: dict[str, str] = {}
+        if "SHA256SUMS.txt" in assets:
+            for line in self._http_get(assets["SHA256SUMS.txt"]).decode("utf-8", "replace").splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    sums[parts[1].lstrip("*")] = parts[0].lower()
+        download_dir = self._runtime_dir() / "downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        for kind, (name, url) in wanted.items():
+            data = self._http_get(url)
+            digest = hashlib.sha256(data).hexdigest()
+            if name in sums and sums[name] != digest:
+                raise ValueError(f"{name}: SHA256 does not match SHA256SUMS.txt")
+            archive = download_dir / name
+            archive.write_bytes(data)
+            try:
+                self._add_package(version, kind, archive)
+            finally:
+                archive.unlink(missing_ok=True)
+        return {"version": version, "downloaded": True}
+
+    async def get_anr_info(self) -> dict:
+        try:
+            version = self._active_version()
+            info = self._package_info(version)
+            return {
+                "status": "success",
+                "installed": version is not None,
+                "version": version,
+                "versions": self._installed_versions(),
+                "built_at": info.get("built_at"),
+                "optiscaler": info.get("optiscaler"),
+            }
+        except Exception as exc:
+            decky.logger.error(f"[ANR] get_anr_info: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def install_bundled(self) -> dict:
+        try:
+            version = await asyncio.to_thread(self._ensure_bundled_package)
+            if not version:
+                return {"status": "error", "message": "No ANR FG package in the plugin's bin folder."}
+            return {"status": "success", "version": version, "message": f"ANR FG {version} is ready."}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] install_bundled: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def update_from_github(self) -> dict:
+        try:
+            result = await asyncio.to_thread(self._download_latest)
+            version = result["version"]
+            state = self._load_state()
+            previous = state.get("active_version")
+            state["active_version"] = version
+            self._save_state(state)
+            if result["downloaded"]:
+                msg = f"Downloaded ANR FG {version}. Patch games again to update them."
+            elif previous == version:
+                msg = f"ANR FG {version} is the newest release."
+            else:
+                msg = f"Switched to ANR FG {version}."
+            return {"status": "success", "version": version, "message": msg}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] update_from_github: {exc}")
+            return {"status": "error", "message": f"Update failed: {exc}"}
+
+    async def set_active_version(self, version: str) -> dict:
+        if version not in self._installed_versions():
+            return {"status": "error", "message": f"ANR FG {version} is not downloaded."}
+        state = self._load_state()
+        state["active_version"] = version
+        self._save_state(state)
+        return {"status": "success", "version": version, "message": f"New patches use ANR FG {version}."}
+
+    # ── Steam library ─────────────────────────────────────────────────────────
+
+    def _steam_library_paths(self) -> list[Path]:
+        home = self._home()
+        roots = [
+            home / ".local" / "share" / "Steam",
+            home / ".steam" / "steam",
+            home / ".steam" / "root",
+            home / ".var" / "app" / "com.valvesoftware.Steam" / "home" / ".local" / "share" / "Steam",
+        ]
+        libraries: list[Path] = []
+        seen: set[str] = set()
+
+        def add(p: Path) -> None:
+            try:
+                key = str(p.resolve())
+            except Exception:
+                key = str(p)
+            if key not in seen and p.exists():
+                seen.add(key)
+                libraries.append(p)
+
+        for root in roots:
+            add(root)
+            vdf = root / "steamapps" / "libraryfolders.vdf"
+            if not vdf.exists():
+                continue
+            try:
+                for line in vdf.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if '"path"' in line:
+                        add(Path(line.split('"path"', 1)[1].strip().strip('"').replace("\\\\", "/")))
+            except Exception as exc:
+                decky.logger.error(f"[ANR] libraryfolders.vdf {vdf}: {exc}")
+        return libraries
+
+    def _find_games(self, appid: str | None = None) -> list[dict]:
+        games: dict[str, dict] = {}
+        for library in self._steam_library_paths():
+            steamapps = library / "steamapps"
+            for manifest in steamapps.glob("appmanifest_*.acf"):
+                info = {"appid": "", "name": "", "installdir": ""}
+                try:
+                    for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+                        for key in info:
+                            token = f'"{key}"'
+                            if line.strip().startswith(token) and not info[key]:
+                                info[key] = line.split(token, 1)[1].strip().strip('"')
+                except Exception:
+                    continue
+                if not info["appid"] or not info["name"] or not info["installdir"]:
+                    continue
+                if appid is not None and info["appid"] != str(appid):
+                    continue
+                name = info["name"]
+                if name.startswith("Proton") or "Steam Linux Runtime" in name or "Steamworks" in name:
+                    continue
+                games[info["appid"]] = {
+                    "appid": info["appid"],
+                    "name": name,
+                    "install_path": str(steamapps / "common" / info["installdir"]),
+                }
+        return sorted(games.values(), key=lambda g: g["name"].lower())
+
+    def _game(self, appid: str) -> dict | None:
+        found = self._find_games(str(appid))
+        return found[0] if found else None
+
+    # ── Executable folder detection ───────────────────────────────────────────
+
+    def _exes(self, root: Path) -> list[Path]:
+        if not root.exists():
+            return []
+        result = []
+        try:
+            for exe in root.rglob("*.exe"):
+                if exe.is_file() and "/_commonredist/" not in str(exe).lower():
+                    result.append(exe)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] exe scan {root}: {exc}")
+        return result
+
+    def _exe_score(self, exe: Path, root: Path, game_name: str) -> int:
+        path = str(exe).lower().replace("\\", "/")
+        name = exe.name.lower()
+        score = 0
+        if name.endswith("-win64-shipping.exe"):
+            score += 300
+        if "shipping.exe" in name:
+            score += 220
+        if "/binaries/win64/" in path:
+            score += 200
+        if "/win64/" in path or "/x64/" in path:
+            score += 80
+        if exe.parent == root:
+            score += 20
+        clean = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+        if clean(game_name) and clean(game_name) in clean(exe.stem):
+            score += 120
+        if clean(root.name) and clean(root.name) in clean(exe.stem):
+            score += 90
+        rel = path[len(str(root).lower()):]
+        for bad in BAD_EXE_SUBSTRINGS:
+            if bad in rel:
+                score -= 200
+        try:
+            score += min(exe.stat().st_size // (16 * 1024 * 1024), 20)
+        except OSError:
+            pass
+        return score - len(exe.parts)
+
+    def _running_exe(self, candidates: list[Path]) -> Path | None:
+        if not candidates:
+            return None
+        try:
+            lines = subprocess.run(["ps", "-eo", "args="], capture_output=True, text=True).stdout.splitlines()
+        except Exception:
+            return None
+        norm = lambda s: s.lower().replace("\\", "/").replace("z:/", "/")
+        best: tuple[int, Path] | None = None
+        for line in map(norm, lines):
+            for exe in candidates:
+                n = norm(str(exe))
+                if n in line and (best is None or len(n) > best[0]):
+                    best = (len(n), exe)
+        return best[1] if best else None
+
+    def _candidate_dirs(self, game: dict) -> list[dict]:
+        root = Path(game["install_path"])
+        exes = self._exes(root)
+        ranked = sorted(exes, key=lambda e: self._exe_score(e, root, game["name"]), reverse=True)
+        dirs: list[dict] = []
+        seen: set[str] = set()
+        for exe in ranked:
+            d = str(exe.parent)
+            if d in seen:
+                continue
+            seen.add(d)
+            rel = os.path.relpath(exe, root)
+            dirs.append({"dir": d, "exe": rel})
+            if len(dirs) >= 8:
+                break
+        return dirs
+
+    def _is_running(self, game: dict) -> bool:
+        return self._running_exe(self._exes(Path(game["install_path"]))) is not None
+
+    # ── Detection of what a folder holds ──────────────────────────────────────
+
+    def _anr_dirs(self, root: Path) -> list[Path]:
+        """Our installs under a game's folder: the record next to OptiScaler (full) or in custom/ (add-on)."""
+        found = []
+        if not root.exists():
+            return found
+        for depth_glob in ("*", "*/*", "*/*/*", "*/*/*/*", "*/*/*/*/*", "*/*/*/*/*/*"):
+            for record in root.glob(f"{depth_glob}/{INSTALL_RECORD}"):
+                found.append(record.parent)
+        return found
+
+    def _describe_dir(self, target: Path) -> dict:
+        full_record = target / "OptiScaler" / INSTALL_RECORD
+        addon_dest = None
+        for base in (target / "OptiScaler" / "custom", target / "custom"):
+            for name in (ANR_DIR_NAME, LEGACY_ANR_DIR_NAME):
+                if (base / name / INSTALL_RECORD).exists():
+                    addon_dest = base / name
+        mode = None
+        proxy = None
+        if full_record.exists():
+            mode = "full"
+            try:
+                proxy = json.loads(full_record.read_text(encoding="utf-8")).get("proxy") or "dxgi.dll"
+            except Exception:
+                proxy = "dxgi.dll"
+        elif addon_dest is not None:
+            mode = "addon"
+        anr_dir = None
+        if mode == "full":
+            anr_dir = target / "OptiScaler" / "custom" / ANR_DIR_NAME
+        elif addon_dest is not None:
+            anr_dir = addon_dest
+        return {
+            "mode": mode,
+            "proxy": proxy,
+            "anr_dir": anr_dir,
+            "framegen": (target / FRAMEGEN_MARKER).exists(),
+            "foreign_optiscaler": (target / "OptiScaler.ini").exists() and mode is None,
+        }
+
+    def _optiscaler_supports_custom_fg(self, target: Path) -> bool:
+        for name in OPTISCALER_PROXY_NAMES:
+            f = target / name
+            try:
+                if f.is_file() and b"FGNvngxReplacement" in f.read_bytes():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _provider_sha(self, anr_dir: Path | None) -> str | None:
+        if not anr_dir:
+            return None
+        dll = anr_dir / "dlssg" / "nvngx_dlssg.dll"
+        if not dll.exists():
+            return None
+        h = hashlib.sha256()
+        with open(dll, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _version_of_provider(self, sha: str | None) -> str | None:
+        if not sha:
+            return None
+        for version in self._installed_versions():
+            if self._package_info(version).get("provider_sha256") == sha:
+                return version
+        return None
+
+    # ── Launch options ────────────────────────────────────────────────────────
+
+    _OVERRIDE_RE = re.compile(r"WINEDLLOVERRIDES=(\"[^\"]*\"|'[^']*'|\S*)")
+
+    def _launch_with_override(self, current: str, proxy: str) -> str:
+        base = proxy[:-4] if proxy.lower().endswith(".dll") else proxy
+        ours = f"{base}=n,b"
+        current = (current or "").strip()
+        m = self._OVERRIDE_RE.search(current)
+        if m:
+            parts = [p for p in m.group(1).strip("\"'").split(";") if p and p.split("=")[0] != base]
+            value = ";".join([ours] + parts)
+            result = current[: m.start()] + f'WINEDLLOVERRIDES="{value}"' + current[m.end():]
+            return result if "%command%" in result else f"{result} %command%"
+        if "%command%" in current:
+            return f'WINEDLLOVERRIDES="{ours}" {current}'
+        if current:
+            return f'WINEDLLOVERRIDES="{ours}" %command% {current}'
+        return f'WINEDLLOVERRIDES="{ours}" %command%'
+
+    def _launch_without_override(self, current: str, proxy: str | None) -> str:
+        current = (current or "").strip()
+        if not proxy:
+            return current
+        base = proxy[:-4] if proxy.lower().endswith(".dll") else proxy
+        m = self._OVERRIDE_RE.search(current)
+        if not m:
+            return current
+        parts = [p for p in m.group(1).strip("\"'").split(";") if p and p != f"{base}=n,b"]
+        replacement = f'WINEDLLOVERRIDES="{";".join(parts)}"' if parts else ""
+        result = " ".join((current[: m.start()] + replacement + current[m.end():]).split())
+        return "" if result == "%command%" else result
+
+    # ── nr_fg.ini ─────────────────────────────────────────────────────────────
+
+    def _read_ini(self, path: Path) -> dict:
+        values = {}
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s and not s.startswith((";", "#", "[")) and "=" in s:
+                    k, v = s.split("=", 1)
+                    values[k.strip()] = v.strip()
+        except FileNotFoundError:
+            pass
+        return values
+
+    def _write_ini_value(self, path: Path, key: str, value: str) -> None:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        done = False
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if not s.startswith((";", "#")) and "=" in s and s.split("=", 1)[0].strip() == key:
+                lines[i] = f"{key} = {value}"
+                done = True
+        if not done:
+            lines.append(f"{key} = {value}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # ── Running the official scripts ──────────────────────────────────────────
+
+    def _run_script(self, script: Path, target: Path) -> tuple[bool, str]:
+        env = dict(os.environ)
+        env["PATH"] = env.get("PATH", "") + ":/usr/local/bin:/usr/bin:/bin"
+        env.pop("LD_LIBRARY_PATH", None)
+        proc = subprocess.run(
+            ["sh", str(script), str(target)],
+            cwd=str(script.parent),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        decky.logger.info(f"[ANR] {script.parent.name}/{script.name} {target}: rc={proc.returncode} {output}")
+        return proc.returncode == 0, output
+
+    # ── Proton ────────────────────────────────────────────────────────────────
+
+    def _compat_mapping(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for library in self._steam_library_paths():
+            cfg = library / "config" / "config.vdf"
+            if not cfg.exists():
+                continue
+            try:
+                text = cfg.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            start = text.find('"CompatToolMapping"')
+            if start < 0:
+                continue
+            # The block ends where its braces balance.
+            i = text.find("{", start)
+            depth, j = 0, i
+            while j < len(text):
+                if text[j] == "{":
+                    depth += 1
+                elif text[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            for m in re.finditer(r'"(\d+)"\s*\{\s*"name"\s*"([^"]*)"', text[i:j]):
+                mapping[m.group(1)] = m.group(2)
+            if mapping:
+                break
+        return mapping
+
+    def _proton_info(self, game: dict) -> dict:
+        mapping = self._compat_mapping()
+        appid = str(game["appid"])
+        tool = mapping.get(appid) or ""
+        source = "game"
+        if not tool:
+            tool = mapping.get("0") or ""
+            source = "default"
+        prefix = None
+        version_file = Path(game["install_path"]).parent.parent / "compatdata" / appid / "version"
+        try:
+            prefix = version_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            pass
+        has_exe = bool(self._exes(Path(game["install_path"])))
+        native = not has_exe
+        return {"tool": tool or None, "source": source, "prefix": prefix, "native": native}
+
+    # ── Frontend API: games ───────────────────────────────────────────────────
+
+    async def list_games(self) -> dict:
+        try:
+            state = self._load_state()
+            games = []
+            for g in self._find_games():
+                games.append({
+                    "appid": g["appid"],
+                    "name": g["name"],
+                    "installed": Path(g["install_path"]).exists(),
+                    "patched": g["appid"] in state.get("games", {}),
+                })
+            return {"status": "success", "games": games}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] list_games: {exc}")
+            return {"status": "error", "message": str(exc), "games": []}
+
+    def _resolve_target(self, game: dict, state_entry: dict | None) -> Path | None:
+        if state_entry and state_entry.get("target_dir") and Path(state_entry["target_dir"]).exists():
+            return Path(state_entry["target_dir"])
+        existing = self._anr_dirs(Path(game["install_path"]))
+        for anr in existing:
+            # full: <target>/OptiScaler/nr_fg_install.json; add-on: <...>/custom/<ANR>/nr_fg_install.json
+            if anr.name == "OptiScaler":
+                return anr.parent
+            if anr.parent.name == "custom":
+                base = anr.parent.parent
+                return base.parent if base.name == "OptiScaler" else base
+        return None
+
+    def _game_status(self, appid: str) -> dict:
+        game = self._game(appid)
+        if not game:
+            return {"status": "error", "message": "The game is not in the Steam library."}
+        root = Path(game["install_path"])
+        if not root.exists():
+            return {"status": "success", "appid": appid, "name": game["name"], "installed": False,
+                    "patched": False, "candidates": []}
+        state = self._load_state()
+        entry = state["games"].get(str(appid))
+        target = self._resolve_target(game, entry)
+        candidates = self._candidate_dirs(game)
+        if target is None:
+            return {
+                "status": "success", "appid": appid, "name": game["name"], "installed": True,
+                "patched": False, "candidates": candidates,
+                "suggested_dir": candidates[0]["dir"] if candidates else str(root),
+                "conflict": self._conflict_message(Path(candidates[0]["dir"])) if candidates else None,
+                "running": self._is_running(game),
+                "proton": self._proton_info(game),
+            }
+        desc = self._describe_dir(target)
+        settings = {}
+        log_file = None
+        if desc["anr_dir"]:
+            ini = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+            raw = self._read_ini(ini)
+            settings = {k: raw.get(k) for k in NR_FG_SETTINGS}
+            logs = sorted((desc["anr_dir"] / "dlssg").glob("nr_fg-*.log"), key=lambda p: p.stat().st_mtime)
+            log_file = str(logs[-1]) if logs else None
+        sha = self._provider_sha(desc["anr_dir"])
+        game_version = self._version_of_provider(sha) or (entry or {}).get("version")
+        return {
+            "status": "success",
+            "appid": appid,
+            "name": game["name"],
+            "installed": True,
+            "patched": desc["mode"] is not None,
+            "mode": desc["mode"],
+            "proxy": desc["proxy"] or (entry or {}).get("proxy"),
+            "target_dir": str(target),
+            "target_rel": os.path.relpath(target, root),
+            "game_version": game_version,
+            "active_version": self._active_version(),
+            "settings": settings,
+            "log_file": log_file,
+            "candidates": candidates,
+            "suggested_dir": str(target),
+            "running": self._is_running(game),
+            "proton": self._proton_info(game),
+        }
+
+    def _conflict_message(self, target: Path) -> str | None:
+        desc = self._describe_dir(target)
+        if desc["framegen"]:
+            return ("Decky Framegen has patched this folder. Its OptiScaler 0.9.4 cannot load ANR FG: "
+                    "unpatch the game in Decky Framegen first.")
+        if desc["foreign_optiscaler"]:
+            if self._optiscaler_supports_custom_fg(target):
+                return "OptiScaler is already here: ANR FG will be added to it as a custom provider (add-on)."
+            return ("An OptiScaler without custom frame generation providers is here. Remove it first, or "
+                    "update it to a build with FGNvngxReplacement.")
+        return None
+
+    async def get_game_status(self, appid: str) -> dict:
+        try:
+            return await asyncio.to_thread(self._game_status, str(appid))
+        except Exception as exc:
+            decky.logger.error(f"[ANR] get_game_status {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _patch(self, appid: str, current_launch_options: str, target_dir: str) -> dict:
+        version = self._active_version()
+        if not version:
+            return {"status": "error", "message": "ANR FG is not set up yet."}
+        game = self._game(appid)
+        if not game:
+            return {"status": "error", "message": "The game is not in the Steam library."}
+        root = Path(game["install_path"]).resolve()
+        if self._is_running(game):
+            return {"status": "error", "message": "Close the game first."}
+        state = self._load_state()
+        entry = state["games"].get(appid)
+        if target_dir:
+            target = Path(target_dir).resolve()
+        else:
+            target = self._resolve_target(game, entry)
+            if target is None:
+                candidates = self._candidate_dirs(game)
+                if not candidates:
+                    return {"status": "error", "message": "No .exe found in the game's folder."}
+                target = Path(candidates[0]["dir"])
+        if target != root and root not in target.parents:
+            return {"status": "error", "message": "The folder is outside the game's install folder."}
+        if not any(target.glob("*.exe")):
+            return {"status": "error", "message": f"No .exe in {target}."}
+
+        # A different folder of the same game is patched: unpatch it first.
+        if entry and entry.get("target_dir") and Path(entry["target_dir"]) != target:
+            old = Path(entry["target_dir"])
+            if old.exists() and self._describe_dir(old)["mode"]:
+                self._unpatch_dir(old, entry.get("version") or version)
+
+        desc = self._describe_dir(target)
+        if desc["framegen"]:
+            return {"status": "error", "message": self._conflict_message(target)}
+        if desc["mode"] == "addon" or (desc["foreign_optiscaler"]):
+            if desc["mode"] is None and not self._optiscaler_supports_custom_fg(target):
+                return {"status": "error", "message": self._conflict_message(target)}
+            kind = "addon"
+        else:
+            kind = "full"
+        package = self._package_dir(version, kind)
+        if not (package / "install.sh").exists():
+            return {"status": "error", "message": f"ANR FG {version} has no {kind} package."}
+        ok, output = self._run_script(package / "install.sh", target)
+        if not ok:
+            return {"status": "error", "message": output.splitlines()[-1] if output else "install.sh failed",
+                    "output": output}
+        desc = self._describe_dir(target)
+        proxy = desc["proxy"] if kind == "full" else None
+        launch_options = (
+            self._launch_with_override(current_launch_options, proxy) if proxy else current_launch_options
+        )
+        state["games"][appid] = {
+            "name": game["name"],
+            "target_dir": str(target),
+            "mode": kind,
+            "proxy": proxy,
+            "version": version,
+            "original_launch_options": (entry or {}).get("original_launch_options", current_launch_options),
+            "patched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_state(state)
+        return {
+            "status": "success",
+            "launch_options": launch_options,
+            "mode": kind,
+            "proxy": proxy,
+            "output": output,
+            "message": f"ANR FG {version} installed in {game['name']}"
+                       + (f" (OptiScaler as {proxy})." if proxy else " as an OptiScaler add-on."),
+        }
+
+    async def patch_game(self, appid: str, current_launch_options: str = "", target_dir: str = "") -> dict:
+        try:
+            return await asyncio.to_thread(self._patch, str(appid), current_launch_options or "", target_dir or "")
+        except Exception as exc:
+            decky.logger.error(f"[ANR] patch_game {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _unpatch_dir(self, target: Path, version: str) -> tuple[bool, str]:
+        desc = self._describe_dir(target)
+        if not desc["mode"]:
+            return True, "nothing to remove"
+        package = self._package_dir(version, desc["mode"])
+        if not (package / "uninstall.sh").exists():
+            active = self._active_version()
+            package = self._package_dir(active, desc["mode"]) if active else package
+        if not (package / "uninstall.sh").exists():
+            return False, f"no {desc['mode']} uninstaller available"
+        return self._run_script(package / "uninstall.sh", target)
+
+    def _unpatch(self, appid: str, current_launch_options: str) -> dict:
+        game = self._game(appid)
+        if not game:
+            return {"status": "error", "message": "The game is not in the Steam library."}
+        if self._is_running(game):
+            return {"status": "error", "message": "Close the game first."}
+        state = self._load_state()
+        entry = state["games"].get(appid)
+        target = self._resolve_target(game, entry)
+        proxy = (entry or {}).get("proxy")
+        output = ""
+        if target is not None:
+            desc = self._describe_dir(target)
+            proxy = desc["proxy"] or proxy
+            ok, output = self._unpatch_dir(target, (entry or {}).get("version") or self._active_version() or "")
+            if not ok:
+                return {"status": "error", "message": output.splitlines()[-1] if output else "uninstall failed",
+                        "output": output}
+        state["games"].pop(appid, None)
+        self._save_state(state)
+        return {
+            "status": "success",
+            "launch_options": self._launch_without_override(current_launch_options, proxy),
+            "output": output,
+            "message": f"ANR FG removed from {game['name']}.",
+        }
+
+    async def unpatch_game(self, appid: str, current_launch_options: str = "") -> dict:
+        try:
+            return await asyncio.to_thread(self._unpatch, str(appid), current_launch_options or "")
+        except Exception as exc:
+            decky.logger.error(f"[ANR] unpatch_game {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def set_game_setting(self, appid: str, key: str, value: str) -> dict:
+        try:
+            spec = NR_FG_SETTINGS.get(key)
+            if not spec:
+                return {"status": "error", "message": f"Unknown setting {key}"}
+            value = str(value)
+            if spec["type"] == "int":
+                n = int(value)
+                if not spec["min"] <= n <= spec["max"]:
+                    return {"status": "error", "message": f"{key} must be {spec['min']}..{spec['max']}"}
+                value = str(n)
+            elif value not in spec["values"]:
+                return {"status": "error", "message": f"{key} must be one of {', '.join(spec['values'])}"}
+            game = self._game(str(appid))
+            if not game:
+                return {"status": "error", "message": "The game is not in the Steam library."}
+            target = self._resolve_target(game, self._load_state()["games"].get(str(appid)))
+            desc = self._describe_dir(target) if target else None
+            if not desc or not desc["anr_dir"]:
+                return {"status": "error", "message": "ANR FG is not installed in this game."}
+            ini = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+            if not ini.exists():
+                return {"status": "error", "message": f"{ini} is missing."}
+            self._write_ini_value(ini, key, value)
+            return {"status": "success", "message": f"{key} = {value}. Restart the game to apply."}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] set_game_setting {appid} {key}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def read_game_log(self, appid: str, lines: int = 40) -> dict:
+        try:
+            status = await asyncio.to_thread(self._game_status, str(appid))
+            log_file = status.get("log_file")
+            if not log_file:
+                return {"status": "success", "log": "", "message": "No nr_fg log yet: start the game with FG on."}
+            text = Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            return {"status": "success", "log": "\n".join(text[-int(lines):]), "path": log_file}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def log_error(self, error: str) -> None:
+        decky.logger.error(f"[ANR] frontend: {error}")

@@ -1,0 +1,11 @@
+{
+  "name": "Decky ANR",
+  "author": "davnozdu",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["framegen", "ANR", "OptiScaler", "DLSS-G"],
+    "description": "Installs and manages ANR FG (Apex Neural Rendering frame generation) with OptiScaler in Proton games.",
+    "image": ""
+  }
+}
