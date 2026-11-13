@@ -133,9 +133,20 @@ export type UpscalerInfo = Result & {
   rdna4?: boolean;
   fsr4_source?: { path: string; version: string; own_prefix: boolean } | null;
   options?: { value: string; label: string }[];
+  render_quality?: string;
+  render_options?: { value: string; label: string; ratio: number | null }[];
+  output?: [number, number] | null;
 };
+export const setRenderQuality = callable<[appid: string, choice: string], Result>("set_render_quality");
 export const getUpscaler = callable<[appid: string], UpscalerInfo>("get_upscaler");
 export const setUpscaler = callable<
   [appid: string, choice: string, watermark: boolean],
   Result & { need_ffx4_upgrade?: boolean }
 >("set_upscaler");
+
+export const getOptiSettings = callable<[appid: string], Result & { settings: Record<string, string> }>(
+  "get_opti_settings"
+);
+export const setOptiSetting = callable<[appid: string, key: string, value: string], Result>("set_opti_setting");
+export const copyProfile = callable<[appid: string, from_appid: string], Result>("copy_profile");
+export const resetProfile = callable<[appid: string], Result>("reset_profile");

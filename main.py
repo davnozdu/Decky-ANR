@@ -956,6 +956,8 @@ class Plugin:
         previous = state["games"].get(appid, {})
         state["games"][appid] = {
             "upscaler": previous.get("upscaler"),
+            "render_quality": previous.get("render_quality"),
+            "opti": previous.get("opti", {}),
             "upscaler_watermark": previous.get("upscaler_watermark", False),
             "managed_files": previous.get("managed_files", []),
             "name": game["name"],
@@ -1217,6 +1219,15 @@ class Plugin:
         "fsr4": "FSR 4 (ML)",
         "xess": "XeSS",
     }
+    # OptiScaler [UpscaleRatio]: output size divided by render size, per axis.
+    RENDER_QUALITY = {
+        "game": ("As set in the game", None),
+        "ultra_quality": ("Ultra Quality", 1.3),
+        "quality": ("Quality", 1.5),
+        "balanced": ("Balanced", 1.7),
+        "performance": ("Performance", 2.0),
+        "ultra_performance": ("Ultra Performance", 3.0),
+    }
 
     def _optiscaler_ini(self, target: Path, desc: dict) -> Path | None:
         if desc.get("mode") == "full":
@@ -1420,15 +1431,257 @@ class Plugin:
         try:
             entry = self._load_state()["games"].get(str(appid), {})
             src = await asyncio.to_thread(self._find_fsr4_dll, str(appid))
+            out = await asyncio.to_thread(self._output_size, str(appid))
             return {"status": "success", "choice": entry.get("upscaler", "package"),
+                    "render_quality": entry.get("render_quality", "game"),
+                    "render_options": [{"value": k, "label": v[0], "ratio": v[1]}
+                                       for k, v in self.RENDER_QUALITY.items()],
+                    "output": list(out) if out else None,
                     "watermark": bool(entry.get("upscaler_watermark")),
                     "fsr4_source": src, "rdna4": self._gpu_is_rdna4(),
                     "options": [{"value": k, "label": v} for k, v in self.UPSCALERS.items()]}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
+    def _apply_render_quality(self, appid: str, target: Path, choice: str) -> dict:
+        desc = self._describe_dir(target)
+        ini = self._optiscaler_ini(target, desc)
+        if not ini or not ini.exists():
+            return {"status": "error", "message": "OptiScaler.ini not found for this game."}
+        label, ratio = self.RENDER_QUALITY[choice]
+        self._set_ini_sections(ini, {
+            ("UpscaleRatio", "UpscaleRatioOverrideEnabled"): "true" if ratio else "auto",
+            ("UpscaleRatio", "UpscaleRatioOverrideValue"): str(ratio) if ratio else "auto",
+        })
+        state = self._load_state()
+        state["games"].setdefault(appid, {})["render_quality"] = choice
+        self._save_state(state)
+        if ratio:
+            return {"status": "success", "message": f"Render quality: {label} (1/{ratio} of the output size, "
+                                                    "whatever the game's DLSS mode). Restart the game."}
+        return {"status": "success", "message": "Render quality follows the game's DLSS mode. Restart the game."}
+
+    async def set_render_quality(self, appid: str, choice: str) -> dict:
+        try:
+            if choice not in self.RENDER_QUALITY:
+                return {"status": "error", "message": f"Unknown render quality {choice}"}
+            game = self._game(str(appid))
+            if not game:
+                return {"status": "error", "message": "The game is not in the Steam library."}
+            if self._is_running(game):
+                return {"status": "error", "message": "Close the game first."}
+            target = self._resolve_target(game, self._load_state()["games"].get(str(appid)))
+            if not target:
+                return {"status": "error", "message": "ANR FG is not installed in this game."}
+            return await asyncio.to_thread(self._apply_render_quality, str(appid), target, choice)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] set_render_quality {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    def _output_size(self, appid: str) -> tuple[int, int] | None:
+        """The output size ANR last saw for this game (its log), for showing render resolutions."""
+        game = self._game(appid)
+        target = self._resolve_target(game, self._load_state()["games"].get(appid)) if game else None
+        desc = self._describe_dir(target) if target else None
+        if not desc or not desc["anr_dir"]:
+            return None
+        logs = sorted((desc["anr_dir"] / "dlssg").glob("nr_fg-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for log in logs[:5]:
+            try:
+                for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+                    m = self._RE_FEATURE.search(line)
+                    if m:
+                        return int(m.group(1)), int(m.group(2))
+            except OSError:
+                continue
+        return None
+
+    # Per-game OptiScaler tuning: key -> (section, ini key, kind, extra)
+    OPTI_SETTINGS = {
+        "fg_multiplier": ("DLSSG", "OverrideInterpolationCount", "enum", ["auto", "1", "2", "3", "4", "5"]),
+        "dynamic_mfg": ("DLSSG", "OverrideForceDMFG", "bool", None),
+        "dmfg_target": ("DLSSG", "FramerateTargetDMFG", "float", (0.0, 360.0)),
+        "fps_limit": ("Framerate", "FramerateLimit", "float", (0.0, 360.0)),
+        "sharpness_override": ("Sharpness", "OverrideSharpness", "bool", None),
+        "sharpness": ("Sharpness", "Sharpness", "float", (0.0, 1.3)),
+        "show_fps": ("Menu", "ShowFps", "bool", None),
+    }
+
+    def _read_ini_sections(self, ini: Path) -> dict[tuple[str, str], str]:
+        values: dict[tuple[str, str], str] = {}
+        section = None
+        for line in ini.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"\s*\[([^\]]+)\]", line)
+            if m:
+                section = m.group(1)
+                continue
+            if "=" in line and not line.lstrip().startswith((";", "#")):
+                k, v = line.split("=", 1)
+                values[(section, k.strip())] = v.strip()
+        return values
+
+    def _normalize_opti(self, key: str, value) -> str:
+        section, ini_key, kind, extra = self.OPTI_SETTINGS[key]
+        if value is None or str(value).strip().lower() in ("", "auto"):
+            return "auto"
+        if kind == "bool":
+            return "true" if str(value).lower() in ("1", "true", "yes", "on") else "false"
+        if kind == "enum":
+            v = str(value)
+            if v not in extra:
+                raise ValueError(f"{key} must be one of {', '.join(extra)}")
+            return v
+        f = float(value)
+        lo, hi = extra
+        if not lo <= f <= hi:
+            raise ValueError(f"{key} must be {lo}..{hi}")
+        if f == 0 and key in ("fps_limit", "dmfg_target"):
+            return "auto"
+        return f"{f:g}"
+
+    def _target_and_ini(self, appid: str) -> tuple[Path, dict, Path]:
+        game = self._game(appid)
+        if not game:
+            raise ValueError("The game is not in the Steam library.")
+        target = self._resolve_target(game, self._load_state()["games"].get(appid))
+        if not target:
+            raise ValueError("ANR FG is not installed in this game.")
+        desc = self._describe_dir(target)
+        ini = self._optiscaler_ini(target, desc)
+        if not ini or not ini.exists():
+            raise ValueError("OptiScaler.ini not found for this game.")
+        return target, desc, ini
+
+    def _apply_opti(self, appid: str, settings: dict[str, str]) -> None:
+        target, desc, ini = self._target_and_ini(appid)
+        values = {}
+        for key, val in settings.items():
+            section, ini_key, _, _ = self.OPTI_SETTINGS[key]
+            values[(section, ini_key)] = val
+        if values:
+            self._set_ini_sections(ini, values)
+        # A forced multiplier above what ANR offers would be capped: raise max_generated to match.
+        mult = settings.get("fg_multiplier")
+        if mult and mult != "auto" and desc.get("anr_dir"):
+            nr = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+            if nr.exists():
+                cur = int(self._read_ini(nr).get("max_generated", "1") or 1)
+                if cur < int(mult):
+                    self._write_ini_value(nr, "max_generated", mult)
+
+    async def get_opti_settings(self, appid: str) -> dict:
+        try:
+            _, _, ini = await asyncio.to_thread(self._target_and_ini, str(appid))
+            raw = self._read_ini_sections(ini)
+            current = {k: raw.get((sec, ik), "auto") for k, (sec, ik, _, _) in self.OPTI_SETTINGS.items()}
+            return {"status": "success", "settings": current}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "settings": {}}
+
+    async def set_opti_setting(self, appid: str, key: str, value: str) -> dict:
+        try:
+            appid = str(appid)
+            if key not in self.OPTI_SETTINGS:
+                return {"status": "error", "message": f"Unknown setting {key}"}
+            game = self._game(appid)
+            if game and self._is_running(game):
+                return {"status": "error", "message": "Close the game first: OptiScaler reads its settings at start."}
+            val = self._normalize_opti(key, value)
+            await asyncio.to_thread(self._apply_opti, appid, {key: val})
+            state = self._load_state()
+            entry = state["games"].setdefault(appid, {})
+            opti = entry.setdefault("opti", {})
+            if val == "auto":
+                opti.pop(key, None)
+            else:
+                opti[key] = val
+            self._save_state(state)
+            return {"status": "success", "message": f"{key} = {val}. Restart the game to apply."}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] set_opti_setting {appid} {key}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    PROFILE_NR_KEYS = ("max_generated", "path", "scene_cut")
+
+    def _export_profile(self, appid: str) -> dict:
+        entry = self._load_state()["games"].get(appid, {})
+        profile = {
+            "upscaler": entry.get("upscaler") or "package",
+            "upscaler_watermark": bool(entry.get("upscaler_watermark")),
+            "render_quality": entry.get("render_quality") or "game",
+            "opti": dict(entry.get("opti", {})),
+            "nr_fg": {},
+        }
+        try:
+            target, desc, _ = self._target_and_ini(appid)
+            if desc.get("anr_dir"):
+                raw = self._read_ini(desc["anr_dir"] / "dlssg" / "nr_fg.ini")
+                profile["nr_fg"] = {k: raw[k] for k in self.PROFILE_NR_KEYS if k in raw}
+        except Exception:
+            pass
+        return profile
+
+    def _import_profile(self, appid: str, profile: dict) -> None:
+        target, desc, ini = self._target_and_ini(appid)
+        # OptiScaler tuning: write every known key (auto where the profile has none)
+        opti = {k: profile.get("opti", {}).get(k, "auto") for k in self.OPTI_SETTINGS}
+        self._apply_opti(appid, opti)
+        state = self._load_state()
+        entry = state["games"].setdefault(appid, {})
+        entry["opti"] = {k: v for k, v in opti.items() if v != "auto"}
+        self._save_state(state)
+        self._apply_render_quality(appid, target, profile.get("render_quality") or "game")
+        up = profile.get("upscaler") or "package"
+        r = self._apply_upscaler(appid, target, up, bool(profile.get("upscaler_watermark")))
+        if r.get("status") != "success" and up != "package":
+            raise ValueError(r.get("message"))
+        if desc.get("anr_dir"):
+            nr = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+            for k, v in (profile.get("nr_fg") or {}).items():
+                if k in self.PROFILE_NR_KEYS and nr.exists():
+                    self._write_ini_value(nr, k, str(v))
+
+    async def copy_profile(self, appid: str, from_appid: str) -> dict:
+        try:
+            appid, from_appid = str(appid), str(from_appid)
+            game = self._game(appid)
+            if game and self._is_running(game):
+                return {"status": "error", "message": "Close the game first."}
+            profile = await asyncio.to_thread(self._export_profile, from_appid)
+            await asyncio.to_thread(self._import_profile, appid, profile)
+            src = self._load_state()["games"].get(from_appid, {}).get("name", from_appid)
+            return {"status": "success", "message": f"Profile copied from {src}. Restart the game."}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] copy_profile {from_appid} -> {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def reset_profile(self, appid: str) -> dict:
+        try:
+            appid = str(appid)
+            game = self._game(appid)
+            if game and self._is_running(game):
+                return {"status": "error", "message": "Close the game first."}
+            default = {"upscaler": "package", "render_quality": "game", "opti": {},
+                       "nr_fg": {"path": self._load_state().get("preferred_path") or "auto"}}
+            await asyncio.to_thread(self._import_profile, appid, default)
+            return {"status": "success", "message": "Profile reset to the ANR package's settings (upscaler: "
+                                                    "applies fully on the next reinstall). Restart the game."}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] reset_profile {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
     def _reapply_upscaler(self, appid: str, target: Path) -> None:
         entry = self._load_state()["games"].get(appid, {})
+        if entry.get("opti"):
+            try:
+                self._apply_opti(appid, dict(entry["opti"]))
+                decky.logger.info(f"[ANR] re-applied OptiScaler settings for {appid}: {entry['opti']}")
+            except Exception as exc:
+                decky.logger.error(f"[ANR] re-applying OptiScaler settings for {appid}: {exc}")
+        rq = entry.get("render_quality")
+        if rq and rq != "game" and rq in self.RENDER_QUALITY:
+            r = self._apply_render_quality(appid, target, rq)
+            decky.logger.info(f"[ANR] re-applied render quality {rq} for {appid}: {r.get('message')}")
         choice = entry.get("upscaler")
         if choice and choice != "package":
             r = self._apply_upscaler(appid, target, choice, bool(entry.get("upscaler_watermark")))

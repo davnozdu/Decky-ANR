@@ -26,6 +26,11 @@ import {
   getGameStatus,
   getPerformance,
   getUpscaler,
+  getOptiSettings,
+  setOptiSetting,
+  copyProfile,
+  resetProfile,
+  setRenderQuality,
   setUpscaler,
   UpscalerInfo,
   PerfSession,
@@ -238,6 +243,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   } | null>(null);
   const [launchOptions, setLaunchOptionsState] = useState<string>("");
   const [upscaler, setUpscalerInfo] = useState<UpscalerInfo | null>(null);
+  const [opti, setOpti] = useState<Record<string, string>>({});
+  const [copyFrom, setCopyFrom] = useState<string>("");
 
   const loadGames = useCallback(async () => {
     setLoadingGames(true);
@@ -269,6 +276,12 @@ function GameSection({ info }: { info: AnrInfo | null }) {
         setUpscalerInfo(await getUpscaler(id));
       } catch {
         setUpscalerInfo(null);
+      }
+      try {
+        const o = await getOptiSettings(id);
+        setOpti(o.status === "success" ? o.settings : {});
+      } catch {
+        setOpti({});
       }
     } catch (e) {
       setStatus({ status: "error", message: errorText(e) });
@@ -345,6 +358,42 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       toast(errorText(e));
     }
     await loadStatus(appid);
+  };
+
+  const changeOpti = async (key: string, value: string) => {
+    setOpti((cur) => ({ ...cur, [key]: value }));
+    try {
+      const r = await setOptiSetting(appid, key, value);
+      if (r.status !== "success") toast(r.message || "Failed.");
+    } catch (e) {
+      toast(errorText(e));
+    }
+  };
+
+  const profileAction = async (fn: () => Promise<{ status: string; message?: string }>) => {
+    try {
+      const r = await fn();
+      toast(r.message || r.status);
+    } catch (e) {
+      toast(errorText(e));
+    }
+    await loadStatus(appid);
+  };
+
+  const changeRenderQuality = async (choice: string) => {
+    try {
+      const r = await setRenderQuality(appid, choice);
+      toast(r.message || r.status);
+    } catch (e) {
+      toast(errorText(e));
+    }
+    await loadStatus(appid);
+  };
+
+  const renderSize = (ratio: number | null | undefined) => {
+    const out = upscaler?.output || [1920, 1080];
+    if (!ratio) return null;
+    return `${Math.round(out[0] / ratio)}×${Math.round(out[1] / ratio)}`;
   };
 
   const addFfx4Upgrade = async () => {
@@ -585,6 +634,26 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       onChange={(o) => void changeUpscaler(String(o.data), Boolean(upscaler.watermark))}
                     />
                   </PanelSectionRow>
+                  {upscaler.render_options && (
+                    <PanelSectionRow>
+                      <DropdownItem
+                        label="Render quality"
+                        description={(() => {
+                          const cur = upscaler.render_options.find((o) => o.value === (upscaler.render_quality || "game"));
+                          const out = upscaler.output || [1920, 1080];
+                          return cur?.ratio
+                            ? `Renders at ${renderSize(cur.ratio)}, upscaled to ${out[0]}×${out[1]}. Lower = faster.`
+                            : "Follows the DLSS mode chosen in the game (keep NVIDIA DLSS selected there).";
+                        })()}
+                        selectedOption={upscaler.render_quality || "game"}
+                        rgOptions={upscaler.render_options.map((o) => ({
+                          data: o.value,
+                          label: o.ratio ? `${o.label} · ${renderSize(o.ratio)}` : o.label,
+                        }))}
+                        onChange={(o) => void changeRenderQuality(String(o.data))}
+                      />
+                    </PanelSectionRow>
+                  )}
                   {!upscaler.fsr4_source && (
                     <PanelSectionRow>
                       <ButtonItem layout="below" onClick={addFfx4Upgrade}>
@@ -604,6 +673,117 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   )}
                 </>
               )}
+              <PanelSectionRow>
+                <div style={{ ...small, opacity: 1, fontWeight: 700, marginTop: "6px" }}>
+                  Game profile · tuning (OptiScaler). Close the game, change, start it again.
+                </div>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <DropdownItem
+                  label="Frame generation multiplier"
+                  description="Overrides what the game asks for (many games only offer 2X on non-RTX 50 GPUs)."
+                  selectedOption={opti.fg_multiplier || "auto"}
+                  rgOptions={[
+                    { data: "auto", label: "As the game asks" },
+                    { data: "1", label: "2X" },
+                    { data: "2", label: "3X" },
+                    { data: "3", label: "4X" },
+                    { data: "4", label: "5X" },
+                    { data: "5", label: "6X" },
+                  ]}
+                  onChange={(o) => void changeOpti("fg_multiplier", String(o.data))}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ToggleField
+                  label="Dynamic multiplier (DMFG)"
+                  description="Picks the lowest multiplier that reaches the target FPS. Needs Streamline 2.11 in the game."
+                  checked={opti.dynamic_mfg === "true"}
+                  onChange={(on: boolean) => void changeOpti("dynamic_mfg", on ? "true" : "auto")}
+                />
+              </PanelSectionRow>
+              {opti.dynamic_mfg === "true" && (
+                <PanelSectionRow>
+                  <SliderField
+                    label="DMFG target FPS"
+                    description="0 = the display's refresh rate."
+                    value={Number(opti.dmfg_target && opti.dmfg_target !== "auto" ? opti.dmfg_target : 0)}
+                    min={0}
+                    max={144}
+                    step={6}
+                    showValue
+                    onChange={(v: number) => void changeOpti("dmfg_target", String(v))}
+                  />
+                </PanelSectionRow>
+              )}
+              <PanelSectionRow>
+                <SliderField
+                  label="FPS limit"
+                  description="0 = off. Steadier frame pacing and less battery drain."
+                  value={Number(opti.fps_limit && opti.fps_limit !== "auto" ? opti.fps_limit : 0)}
+                  min={0}
+                  max={144}
+                  step={6}
+                  showValue
+                  onChange={(v: number) => void changeOpti("fps_limit", String(v))}
+                />
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ToggleField
+                  label="Sharpening (RCAS)"
+                  description="Override the sharpening strength; useful with Performance render quality."
+                  checked={opti.sharpness_override === "true"}
+                  onChange={(on: boolean) => void changeOpti("sharpness_override", on ? "true" : "auto")}
+                />
+              </PanelSectionRow>
+              {opti.sharpness_override === "true" && (
+                <PanelSectionRow>
+                  <SliderField
+                    label="Sharpening strength"
+                    value={Math.round(Number(opti.sharpness && opti.sharpness !== "auto" ? opti.sharpness : 0.3) * 10)}
+                    min={0}
+                    max={13}
+                    step={1}
+                    showValue
+                    valueSuffix=" /10"
+                    onChange={(v: number) => void changeOpti("sharpness", String(v / 10))}
+                  />
+                </PanelSectionRow>
+              )}
+              <PanelSectionRow>
+                <ToggleField
+                  label="OptiScaler FPS counter"
+                  checked={opti.show_fps === "true"}
+                  onChange={(on: boolean) => void changeOpti("show_fps", on ? "true" : "auto")}
+                />
+              </PanelSectionRow>
+              {games.filter((g) => g.patched && g.appid !== appid).length > 0 && (
+                <>
+                  <PanelSectionRow>
+                    <DropdownItem
+                      label="Copy the profile from"
+                      strDefaultLabel="Choose a game"
+                      selectedOption={copyFrom}
+                      rgOptions={games
+                        .filter((g) => g.patched && g.appid !== appid)
+                        .map((g) => ({ data: g.appid, label: g.name }))}
+                      onChange={(o) => setCopyFrom(String(o.data))}
+                    />
+                  </PanelSectionRow>
+                  {copyFrom && (
+                    <PanelSectionRow>
+                      <ButtonItem layout="below" onClick={() => profileAction(() => copyProfile(appid, copyFrom))}>
+                        Copy the profile
+                      </ButtonItem>
+                    </PanelSectionRow>
+                  )}
+                </>
+              )}
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={() => profileAction(() => resetProfile(appid))}>
+                  Reset the profile
+                </ButtonItem>
+              </PanelSectionRow>
               <PanelSectionRow>
                 <SliderField
                   label="Generated frames"
