@@ -559,6 +559,23 @@ function GameSection({ info }: { info: AnrInfo | null }) {
 
           {patched && (
             <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                description={
+                  status?.running
+                    ? "Close the game to remove it."
+                    : "Restores the game's files and launch options; the game's profile is deleted."
+                }
+                disabled={busy !== null || status?.running}
+                onClick={doUnpatch}
+              >
+                {busy === "unpatch" ? "Removing…" : "Remove ANR FG from this game"}
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+
+          {patched && (
+            <PanelSectionRow>
               <div
                 style={{
                   ...small,
@@ -609,13 +626,6 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             </>
           )}
 
-          {patched && (
-            <PanelSectionRow>
-              <ButtonItem layout="below" disabled={busy !== null || status?.running} onClick={doUnpatch}>
-                {busy === "unpatch" ? "Removing…" : "Remove ANR FG"}
-              </ButtonItem>
-            </PanelSectionRow>
-          )}
 
           {patched && (
             <>
