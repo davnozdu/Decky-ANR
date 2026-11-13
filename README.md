@@ -23,6 +23,11 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
   current launch options shown.
 - Shows which Proton the game runs on (per-game Steam Play setting or the Steam default, and the prefix version);
   warns about native Linux builds, which cannot use ANR FG.
+- **Benchmark**: runs ANR's official test kit on the device (every compute path at 1080p/1440p/4K, timed and
+  checked against reference frames, next to AMD FSR 3.1 frame generation), shows the table and applies the best
+  path to all games and new installs in one click. On a Radeon 890M, ANR's `auto` picks `coopmat` while
+  `portable-linalg` is ~24% faster and more accurate.
+- **Performance by compute path** per game, from ANR's own logs (GPU ms per real frame, real → shown FPS, errors).
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
 - **Update notifications**: checks GitHub at start and every 6 hours; a Steam toast and a banner tell you when a new
   ANR FG release or a new Decky ANR version is out. ANR FG downloads in one click (SHA256-checked), the plugin
@@ -44,6 +49,14 @@ Games patched by Decky Framegen must be unpatched there first: its OptiScaler 0.
 |---|---|---|---|
 | ROG Xbox Ally X (Ryzen AI Z2 Extreme, Radeon 890M) | CachyOS Handheld, proton-cachyos 11.0 | Forza Horizon 6 (D3D12, Streamline DLSS-G) | Works: 2X at 1920x1080, ~31 real FPS → ~63 shown, coopmat path, ~2–4 ms GPU per generated frame, 0 generation errors |
 
+Test kit on the same device (ANR FG V.B15, 2X, ms per real frame, lower is better; dB vs reference, higher is better):
+
+| | portable-linalg | coopmat (auto) | packed | FSR 3.1 FG |
+|---|---|---|---|---|
+| 1080p | **4.01** · 90.9 dB | 5.27 · 82.2 dB | 5.53 · 82.7 dB | 6.07 |
+| 1440p | **6.90** · 91.3 dB | 8.89 · 82.9 dB | 9.33 · 83.5 dB | 10.74 |
+| 2160p | **15.58** · 91.5 dB | 20.18 · 84.0 dB | 21.20 · 84.8 dB | 25.98 |
+
 Notes:
 - Frame generation starts when gameplay starts (menus may not use it); the game may re-create it on scene changes.
 - Frame generation feels best with 40+ real FPS: raise or remove the game's own frame-rate cap.
@@ -60,4 +73,5 @@ npm run build
 ## Licenses
 
 Plugin code: BSD-3-Clause. ANR FG is © Apex Compute and distributed as published in its GitHub releases.
-OptiScaler (inside the ANR FG package) is GPL-3.0; its source is attached to each ANR release.
+OptiScaler (inside the ANR FG full package) is GPL-3.0; the source of the bundled build (Apex OptiScaler, upstream
+`d6b02459`) is [anr-fg-V.B15-full-optiscaler-source.zip](https://github.com/apex-compute/ANR/releases/download/FG-V.B15/anr-fg-V.B15-full-optiscaler-source.zip).

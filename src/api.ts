@@ -77,3 +77,52 @@ export const listOutdatedGames = callable<
   Result & { games: { appid: string; name: string; version: string }[]; active_version?: string | null }
 >("list_outdated_games");
 export const updateAllGames = callable<[], Result & { updated?: string[]; skipped?: string[] }>("update_all_games");
+
+export type PerfSession = {
+  log: string;
+  started: string;
+  path: string;
+  resolution: string | null;
+  multiplier: number | null;
+  pair_ms: number | null;
+  gen_ms: number | null;
+  total_ms: number | null;
+  real_fps: number | null;
+  shown_fps: number | null;
+  evaluations: number;
+  errors: number;
+};
+
+export const getPerformance = callable<
+  [appid: string, limit: number],
+  Result & {
+    sessions: PerfSession[];
+    summary?: { path: string; sessions: number; total_ms: number; real_fps: number | null }[];
+  }
+>("get_performance");
+
+export type BenchEntry = { ms?: number; db?: number; passes?: boolean; auto?: boolean };
+export type BenchResult = {
+  version: string;
+  date: string;
+  gpu: string | null;
+  runs: number;
+  failed: number | null;
+  best_path: string | null;
+  auto_path: string | null;
+  table: Record<string, Record<string, BenchEntry>>;
+  fsr: Record<string, number>;
+  file?: string;
+};
+export type BenchState = Result & {
+  live: { stage?: string; message?: string; progress?: number; total?: number; result?: BenchResult };
+  result?: BenchResult | null;
+  preferred_path?: string | null;
+  kit_mb?: number;
+};
+
+export const startBenchmark = callable<[], Result>("start_benchmark");
+export const cancelBenchmark = callable<[], Result>("cancel_benchmark");
+export const getBenchmark = callable<[], BenchState>("get_benchmark");
+export const applyPathAll = callable<[path: string], Result>("apply_path_all");
+export const deleteBenchmarkKit = callable<[], Result>("delete_benchmark_kit");

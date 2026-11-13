@@ -15,6 +15,7 @@ import re
 import shutil
 import ssl
 import subprocess
+import time
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
@@ -943,6 +944,11 @@ class Plugin:
             return {"status": "error", "message": output.splitlines()[-1] if output else "install.sh failed",
                     "output": output}
         desc = self._describe_dir(target)
+        preferred = self._load_state().get("preferred_path")
+        if preferred and desc["anr_dir"]:
+            ini = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+            if ini.exists() and self._read_ini(ini).get("path", "auto") == "auto":
+                self._write_ini_value(ini, "path", preferred)
         proxy = desc["proxy"] if kind == "full" else None
         launch_options = (
             self._launch_with_override(current_launch_options, proxy) if proxy else current_launch_options
@@ -1059,6 +1065,387 @@ class Plugin:
             return {"status": "success", "log": "\n".join(text[-int(lines):]), "path": log_file}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
+
+    # ── Performance from nr_fg logs ───────────────────────────────────────────
+
+    _RE_READY = re.compile(r"our frame generation ready for (\S+) colors \((\S+?), ")
+    _RE_FEATURE = re.compile(r"frame generation feature: (\d+)x(\d+)")
+    _RE_MEDIANS = re.compile(
+        r"GPU ms \(medians[^)]*\): frame in ([\d.]+) pair ([\d.]+), per generated frame phase ([\d.]+) "
+        r"out ([\d.]+), (\d+)X \((\d+) generated evaluations, (\d+) generation errors\)")
+    _RE_INTERVAL = re.compile(r", ([\d.]+) ms after the previous evaluate")
+
+    def _parse_session(self, log: Path) -> dict | None:
+        paths: list[str] = []
+        res = None
+        pairs: list[float] = []
+        gens: list[float] = []
+        intervals: list[float] = []
+        mult = None
+        evaluations = 0
+        errors = 0
+        session_errors = 0
+        try:
+            with open(log, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = self._RE_READY.search(line)
+                    if m:
+                        paths.append(m.group(2))
+                        continue
+                    m = self._RE_FEATURE.search(line)
+                    if m:
+                        res = f"{m.group(1)}x{m.group(2)}"
+                        continue
+                    m = self._RE_MEDIANS.search(line)
+                    if m:
+                        pair, phase, out = float(m.group(2)), float(m.group(3)), float(m.group(4))
+                        if pair > 0 and phase > 0:
+                            pairs.append(pair)
+                            gens.append(phase + out)
+                        mult = int(m.group(5))
+                        if "final" in line:
+                            evaluations += int(m.group(6))
+                            session_errors += int(m.group(7))
+                        errors = max(errors, int(m.group(7)))
+                        continue
+                    m = self._RE_INTERVAL.search(line)
+                    if m:
+                        v = float(m.group(1))
+                        if 5.0 < v < 100.0:  # skip pauses and loading screens
+                            intervals.append(v)
+        except OSError:
+            return None
+        if not paths:
+            return None
+        med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
+        interval = med(intervals)
+        real_fps = round(1000.0 / interval, 1) if interval else None
+        gen = med(gens)
+        pair = med(pairs)
+        return {
+            "log": log.name,
+            "started": log.stem.replace("nr_fg-", ""),
+            "path": paths[-1],
+            "resolution": res,
+            "multiplier": mult,
+            "pair_ms": round(pair, 2) if pair is not None else None,
+            "gen_ms": round(gen, 2) if gen is not None else None,
+            "total_ms": round(pair + gen * (mult - 1), 2) if pair is not None and gen is not None and mult else None,
+            "real_fps": real_fps,
+            "shown_fps": round(real_fps * mult, 1) if real_fps and mult else None,
+            "evaluations": evaluations,
+            "errors": max(errors, session_errors),
+            "samples": len(pairs),
+        }
+
+    def _performance(self, appid: str, limit: int) -> dict:
+        game = self._game(appid)
+        if not game:
+            return {"status": "error", "message": "The game is not in the Steam library.", "sessions": []}
+        target = self._resolve_target(game, self._load_state()["games"].get(appid))
+        desc = self._describe_dir(target) if target else None
+        if not desc or not desc["anr_dir"]:
+            return {"status": "success", "sessions": [], "message": "ANR FG is not installed in this game."}
+        logs = sorted((desc["anr_dir"] / "dlssg").glob("nr_fg-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        sessions = []
+        for log in logs:
+            parsed = self._parse_session(log)
+            if parsed:
+                sessions.append(parsed)
+            if len(sessions) >= limit:
+                break
+        by_path: dict[str, list[dict]] = {}
+        for sess in sessions:
+            if sess["total_ms"] is not None:
+                by_path.setdefault(sess["path"], []).append(sess)
+        summary = []
+        for path, items in by_path.items():
+            totals = sorted(x["total_ms"] for x in items)
+            fps = sorted(x["real_fps"] for x in items if x["real_fps"])
+            summary.append({
+                "path": path,
+                "sessions": len(items),
+                "total_ms": totals[len(totals) // 2],
+                "real_fps": fps[len(fps) // 2] if fps else None,
+            })
+        summary.sort(key=lambda x: x["total_ms"])
+        return {"status": "success", "sessions": sessions, "summary": summary}
+
+    async def get_performance(self, appid: str, limit: int = 8) -> dict:
+        try:
+            return await asyncio.to_thread(self._performance, str(appid), int(limit))
+        except Exception as exc:
+            decky.logger.error(f"[ANR] get_performance {appid}: {exc}")
+            return {"status": "error", "message": str(exc), "sessions": []}
+
+    # ── Benchmark (the ANR FG test kit) ───────────────────────────────────────
+
+    KIT_TOTAL_RE = re.compile(r"\[(\d+)/(\d+)\]\s+(\S+)")
+    INI_PATHS = {"coopmat", "packed", "dp4a", "portable", "portable-linalg", "portable-xmx"}
+
+    def _bench_dir(self) -> Path:
+        return self._runtime_dir() / "benchmark"
+
+    def _bench_set(self, **kw) -> None:
+        cur = getattr(self, "_bench", {}) or {}
+        cur.update(kw)
+        self._bench = cur
+
+    def _download_file(self, url: str, dest: Path, expected_size: int | None) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_suffix(dest.suffix + ".part")
+        curl = shutil.which("curl") or ("/usr/bin/curl" if os.path.exists("/usr/bin/curl") else None)
+        if curl:
+            env = dict(os.environ)
+            env.pop("LD_LIBRARY_PATH", None)
+            proc = subprocess.Popen([curl, "-fsSL", "-A", USER_AGENT, "-o", str(part), url],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+            while proc.poll() is None:
+                done = part.stat().st_size if part.exists() else 0
+                self._bench_set(progress=done, total=expected_size or 0)
+                if getattr(self, "_bench_cancel", False):
+                    proc.kill()
+                    raise RuntimeError("cancelled")
+                time.sleep(1)
+            if proc.returncode != 0:
+                raise RuntimeError(f"curl: {proc.stderr.read().decode('utf-8', 'replace').strip()}")
+        else:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=60, context=self._ssl_context()) as resp, open(part, "wb") as f:
+                done = 0
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    self._bench_set(progress=done, total=expected_size or 0)
+        os.replace(part, dest)
+
+    def _kit_ready(self, version: str) -> Path | None:
+        root = self._bench_dir() / f"anr-fg-{version}-kit-linux"
+        return root if (root / "run.sh").exists() else None
+
+    def _benchmark_job(self) -> None:
+        import tarfile
+        try:
+            version = self._active_version()
+            if not version:
+                raise RuntimeError("ANR FG is not set up yet.")
+            for g in self._find_games():
+                if g["appid"] in self._load_state().get("games", {}) and self._is_running(g):
+                    raise RuntimeError(f"Close {g['name']} first: the benchmark needs the GPU to itself.")
+            kit = self._kit_ready(version)
+            if not kit:
+                self._bench_set(stage="download", message=f"Downloading the ANR FG {version} test kit…")
+                tag = f"FG-{version}"
+                release = json.loads(self._http_get(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{tag}", "application/vnd.github+json"))
+                assets = {a["name"]: a for a in release.get("assets", [])}
+                name = f"anr-fg-{version}-kit-linux.tar.gz"
+                if name not in assets:
+                    raise RuntimeError(f"{tag} has no {name}")
+                sums = {}
+                if "SHA256SUMS.txt" in assets:
+                    for line in self._http_get(assets["SHA256SUMS.txt"]["browser_download_url"]).decode().splitlines():
+                        parts = line.split()
+                        if len(parts) == 2:
+                            sums[parts[1].lstrip("*")] = parts[0].lower()
+                archive = self._bench_dir() / name
+                self._download_file(assets[name]["browser_download_url"], archive, assets[name].get("size"))
+                self._bench_set(stage="verify", message="Checking the download…", progress=0, total=0)
+                if name in sums and self._file_sha256(archive) != sums[name]:
+                    archive.unlink(missing_ok=True)
+                    raise RuntimeError("the kit's SHA256 does not match SHA256SUMS.txt")
+                self._bench_set(stage="extract", message="Unpacking the kit…")
+                for old in self._bench_dir().glob("anr-fg-*-kit-linux"):
+                    shutil.rmtree(old, ignore_errors=True)
+                with tarfile.open(archive) as tf:
+                    root = self._bench_dir().resolve()
+                    for m in tf.getmembers():
+                        target = (self._bench_dir() / m.name).resolve()
+                        if root not in target.parents and target != root:
+                            raise RuntimeError(f"unsafe path in the kit: {m.name}")
+                        if m.issym() or m.islnk():
+                            link = (target.parent / m.linkname).resolve()
+                            if root not in link.parents:
+                                raise RuntimeError(f"unsafe link in the kit: {m.name}")
+                    tf.extractall(self._bench_dir())
+                archive.unlink(missing_ok=True)
+                kit = self._kit_ready(version)
+                if not kit:
+                    raise RuntimeError("the kit has no run.sh")
+            self._bench_set(stage="run", message="Running the test kit (5–15 min). Keep games closed.",
+                            progress=0, total=0)
+            env = dict(os.environ)
+            env.pop("LD_LIBRARY_PATH", None)
+            env["PATH"] = env.get("PATH", "") + ":/usr/local/bin:/usr/bin:/bin"
+            log_path = kit / "decky-run.log"
+            with open(log_path, "w") as log:
+                proc = subprocess.Popen(["sh", "./run.sh"], cwd=str(kit), stdout=log, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+                self._bench_proc = proc
+                while proc.poll() is None:
+                    if getattr(self, "_bench_cancel", False):
+                        os.killpg(proc.pid, 15)
+                        raise RuntimeError("cancelled")
+                    try:
+                        lines = log_path.read_text(errors="replace").splitlines()
+                    except OSError:
+                        lines = []
+                    for line in reversed(lines):
+                        m = self.KIT_TOTAL_RE.search(line)
+                        if m:
+                            self._bench_set(progress=int(m.group(1)), total=int(m.group(2)),
+                                            message=f"Run {m.group(1)}/{m.group(2)}: {m.group(3)}")
+                            break
+                    time.sleep(2)
+            text = log_path.read_text(errors="replace")
+            m = re.search(r"(results/anr-fg-kit-\S+\.json)", text)
+            if proc.returncode != 0 or not m:
+                raise RuntimeError("the kit failed: " + " ".join(text.strip().splitlines()[-2:]))
+            result_file = kit / m.group(1).rstrip(":")
+            summary = self._summarize_kit(result_file, version)
+            state = self._load_state()
+            state["benchmark"] = summary
+            self._save_state(state)
+            self._bench_set(stage="done", message=f"Best path: {summary.get('best_path')}", result=summary)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] benchmark: {exc}")
+            self._bench_set(stage="error", message=str(exc))
+        finally:
+            self._bench_proc = None
+            self._bench_cancel = False
+
+    def _file_sha256(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _summarize_kit(self, result_file: Path, version: str) -> dict:
+        data = json.loads(result_file.read_text())
+        table: dict[str, dict[str, dict]] = {}
+        fsr: dict[str, float] = {}
+        gpu = None
+        for run in data.get("runs", []):
+            name = run.get("run", "")
+            rec = run.get("record") or {}
+            m = re.match(r"timing-(\d+p)-(\d)x-(.+)$", name)
+            if not m or run.get("exit") != 0:
+                continue
+            res, mult, variant = m.group(1), int(m.group(2)), m.group(3)
+            if variant == "fsrfg":
+                t = rec.get("timing") or {}
+                if t.get("frame_ms_median"):
+                    fsr[res] = round(t["frame_ms_median"], 2)
+                continue
+            gpu = gpu or rec.get("adapter")
+            if variant == "auto":
+                path = rec.get("path_selected") or rec.get("path")
+            elif variant in self.INI_PATHS:
+                path = variant
+            else:
+                continue  # kit-only variants (sm-loops, nvidia-ada, portable-dp4a)
+            if path not in self.INI_PATHS or mult != 2:
+                continue
+            ms = (rec.get("frame_ms") or {}).get("median")
+            entry = table.setdefault(res, {}).setdefault(path, {})
+            if ms is not None and (entry.get("ms") is None or ms < entry["ms"]):
+                entry["ms"] = round(ms, 2)
+            if rec.get("host_vs_reference_db") is not None:
+                entry["db"] = round(rec["host_vs_reference_db"], 1)
+                entry["passes"] = bool(rec.get("passes_bar"))
+            if variant == "auto":
+                entry["auto"] = True
+        # The best path wins on the most sizes (fastest that passes), 1080p breaking ties.
+        wins: dict[str, int] = {}
+        for res, paths in table.items():
+            ok = {p: v for p, v in paths.items() if v.get("ms") is not None and v.get("passes", True)}
+            if ok:
+                best = min(ok, key=lambda p: ok[p]["ms"])
+                wins[best] = wins.get(best, 0) + (2 if res == "1080p" else 1)
+        best_path = max(wins, key=wins.get) if wins else None
+        auto_path = next((p for paths in table.values() for p, v in paths.items() if v.get("auto")), None)
+        return {
+            "version": version,
+            "date": datetime.now(timezone.utc).isoformat(),
+            "gpu": gpu,
+            "file": str(result_file),
+            "runs": len(data.get("runs", [])),
+            "failed": data.get("failed_runs"),
+            "best_path": best_path,
+            "auto_path": auto_path,
+            "table": table,
+            "fsr": fsr,
+        }
+
+    async def start_benchmark(self) -> dict:
+        if getattr(self, "_bench", {}).get("stage") in ("download", "verify", "extract", "run"):
+            return {"status": "error", "message": "The benchmark is already running."}
+        self._bench = {"stage": "starting", "message": "Starting…", "progress": 0, "total": 0}
+        self._bench_cancel = False
+        import threading
+        threading.Thread(target=self._benchmark_job, daemon=True).start()
+        return {"status": "success", "message": "Benchmark started."}
+
+    async def cancel_benchmark(self) -> dict:
+        self._bench_cancel = True
+        return {"status": "success", "message": "Stopping the benchmark…"}
+
+    async def get_benchmark(self) -> dict:
+        state = self._load_state()
+        live = getattr(self, "_bench", None) or {}
+        kit_size = 0
+        if self._bench_dir().exists():
+            for f in self._bench_dir().rglob("*"):
+                try:
+                    kit_size += f.stat().st_size if f.is_file() else 0
+                except OSError:
+                    pass
+        return {
+            "status": "success",
+            "live": live,
+            "result": state.get("benchmark"),
+            "preferred_path": state.get("preferred_path"),
+            "kit_mb": round(kit_size / 2**20),
+        }
+
+    def _apply_path_all(self, path: str) -> dict:
+        if path != "auto" and path not in self.INI_PATHS:
+            return {"status": "error", "message": f"Unknown path {path}"}
+        state = self._load_state()
+        state["preferred_path"] = None if path == "auto" else path
+        self._save_state(state)
+        done = []
+        for appid, entry in state.get("games", {}).items():
+            target = Path(entry.get("target_dir", ""))
+            desc = self._describe_dir(target) if target.exists() else None
+            if desc and desc["anr_dir"]:
+                ini = desc["anr_dir"] / "dlssg" / "nr_fg.ini"
+                if ini.exists():
+                    self._write_ini_value(ini, "path", path)
+                    done.append(entry.get("name", appid))
+        return {"status": "success",
+                "message": f"Compute path {path} for {', '.join(done) or 'no games yet'} and new installs. "
+                           "Restart running games."}
+
+    async def apply_path_all(self, path: str) -> dict:
+        try:
+            return await asyncio.to_thread(self._apply_path_all, str(path))
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def delete_benchmark_kit(self) -> dict:
+        if getattr(self, "_bench", {}).get("stage") in ("download", "verify", "extract", "run"):
+            return {"status": "error", "message": "The benchmark is running."}
+        for old in self._bench_dir().glob("anr-fg-*-kit-linux*"):
+            if old.is_dir():
+                shutil.rmtree(old, ignore_errors=True)
+            else:
+                old.unlink(missing_ok=True)
+        return {"status": "success", "message": "Test kit removed (results kept)."}
 
     async def log_error(self, error: str) -> None:
         decky.logger.error(f"[ANR] frontend: {error}")

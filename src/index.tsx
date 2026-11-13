@@ -9,15 +9,23 @@ import {
   SliderField,
   ToggleField,
 } from "@decky/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MdAutoAwesome } from "react-icons/md";
 import {
   AnrInfo,
+  applyPathAll,
+  BenchState,
+  cancelBenchmark,
   checkUpdates,
+  deleteBenchmarkKit,
+  getBenchmark,
+  startBenchmark,
   GameEntry,
   GameStatus,
   getAnrInfo,
   getGameStatus,
+  getPerformance,
+  PerfSession,
   installBundled,
   listGames,
   listOutdatedGames,
@@ -221,6 +229,10 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   const [busy, setBusy] = useState<"patch" | "unpatch" | null>(null);
   const [dirChoice, setDirChoice] = useState<string>(AUTO_DIR);
   const [log, setLog] = useState<string>("");
+  const [perf, setPerf] = useState<{
+    sessions: PerfSession[];
+    summary?: { path: string; sessions: number; total_ms: number; real_fps: number | null }[];
+  } | null>(null);
   const [launchOptions, setLaunchOptionsState] = useState<string>("");
 
   const loadGames = useCallback(async () => {
@@ -260,6 +272,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   useEffect(() => {
     setDirChoice(AUTO_DIR);
     setLog("");
+    setPerf(null);
     void loadStatus(appid);
   }, [appid, loadStatus]);
 
@@ -313,6 +326,17 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       toast(errorText(e));
     }
     await loadStatus(appid);
+  };
+
+  const showPerf = async () => {
+    try {
+      const r = await getPerformance(appid, 8);
+      if (r.status !== "success") throw new Error(r.message || "No data.");
+      setPerf({ sessions: r.sessions || [], summary: r.summary });
+      if (!r.sessions?.length) toast("No sessions with frame generation yet: play with DLSS FG on.");
+    } catch (e) {
+      toast(errorText(e));
+    }
   };
 
   const showLog = async () => {
@@ -538,6 +562,53 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 />
               </PanelSectionRow>
               <PanelSectionRow>
+                <ButtonItem layout="below" onClick={showPerf}>
+                  Performance by compute path
+                </ButtonItem>
+              </PanelSectionRow>
+              {perf && perf.sessions.length > 0 && (
+                <PanelSectionRow>
+                  <div style={{ ...small, opacity: 1 }}>
+                    {perf.summary && perf.summary.length > 0 && (
+                      <div style={{ marginBottom: "6px" }}>
+                        <b>Best:</b> {perf.summary[0].path} ({perf.summary[0].total_ms} ms GPU per real frame)
+                        {perf.summary.length > 1 &&
+                          perf.summary
+                            .slice(1)
+                            .map((x) => ` · ${x.path} ${x.total_ms} ms`)
+                            .join("")}
+                      </div>
+                    )}
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", opacity: 0.7 }}>
+                          <th>Path</th>
+                          <th>GPU ms</th>
+                          <th>FPS</th>
+                          <th>Err</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {perf.sessions.map((x) => (
+                          <tr key={x.log}>
+                            <td>{x.path}</td>
+                            <td>{x.total_ms ?? "—"}</td>
+                            <td>
+                              {x.real_fps ?? "—"}→{x.shown_fps ?? "—"}
+                            </td>
+                            <td style={{ color: x.errors ? "#ff7b72" : undefined }}>{x.errors}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ marginTop: "6px", opacity: 0.7 }}>
+                      GPU ms: ANR's GPU time per real frame (pair + generated frames), lower is better. Newest
+                      session first. Compare paths in the same scene for a fair result.
+                    </div>
+                  </div>
+                </PanelSectionRow>
+              )}
+              <PanelSectionRow>
                 <ButtonItem layout="below" onClick={showLog}>
                   Show the newest nr_fg log
                 </ButtonItem>
@@ -556,6 +627,201 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             </ButtonItem>
           </PanelSectionRow>
         </>
+      )}
+    </PanelSection>
+  );
+}
+
+// ─── Benchmark (ANR FG test kit) ─────────────────────────────────────────────
+
+const RUNNING_STAGES = ["starting", "download", "verify", "extract", "run"];
+
+function BenchmarkSection() {
+  const [bench, setBench] = useState<BenchState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setBench(await getBenchmark());
+    } catch (e) {
+      setBench({ status: "error", message: errorText(e), live: {} });
+    }
+  }, []);
+
+  const running = RUNNING_STAGES.includes(bench?.live?.stage || "");
+
+  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    if (!running) return undefined;
+    const id = window.setInterval(() => void load(), 2000);
+    return () => window.clearInterval(id);
+  }, [running, load]);
+
+  const stage = bench?.live?.stage;
+  const lastStage = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const was = lastStage.current;
+    lastStage.current = stage;
+    if (!was || !RUNNING_STAGES.includes(was)) return;
+    if (stage === "done") toast(bench?.live?.message || "Benchmark finished.");
+    if (stage === "error") toast(`Benchmark: ${bench?.live?.message}`);
+  }, [stage]);
+
+  const act = async (fn: () => Promise<{ status: string; message?: string }>) => {
+    setBusy(true);
+    try {
+      const r = await fn();
+      if (r.message) toast(r.message);
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  };
+
+  const result = bench?.live?.result || bench?.result || null;
+  const live = bench?.live || {};
+  const pct =
+    live.total && live.total > 0 ? Math.min(100, Math.round(((live.progress || 0) / live.total) * 100)) : null;
+  const sizes = result ? Object.keys(result.table).sort((a, b) => parseInt(a) - parseInt(b)) : [];
+  const paths = result
+    ? Array.from(new Set(sizes.flatMap((s) => Object.keys(result.table[s])))).sort((a, b) => {
+        const ms = (p: string) => result.table[sizes[0]]?.[p]?.ms ?? 1e9;
+        return ms(a) - ms(b);
+      })
+    : [];
+
+  return (
+    <PanelSection title="Benchmark">
+      <PanelSectionRow>
+        <div style={small}>
+          Runs ANR's official test kit on this GPU: every compute path at 1080p, 1440p and 4K, timed and checked against
+          reference frames, next to AMD FSR 3.1 frame generation. Downloads ~570 MB once; takes 5–15 min. Close games
+          first and plug the device in.
+        </div>
+      </PanelSectionRow>
+
+      {running ? (
+        <>
+          <PanelSectionRow>
+            <div style={{ ...small, opacity: 1 }}>
+              {live.message}
+              {pct !== null && (
+                <div style={{ marginTop: "6px", height: "6px", borderRadius: "3px", background: "rgba(255,255,255,0.15)" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: "3px", background: "#58a6ff" }} />
+                </div>
+              )}
+              {live.stage === "download" && live.total ? (
+                <div style={{ marginTop: "4px" }}>
+                  {Math.round((live.progress || 0) / 2 ** 20)} / {Math.round(live.total / 2 ** 20)} MB
+                </div>
+              ) : null}
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy} onClick={() => act(cancelBenchmark)}>
+              Stop the benchmark
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      ) : (
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={busy} onClick={() => act(startBenchmark)}>
+            {result ? "Run the benchmark again" : "Run the benchmark"}
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+
+      {live.stage === "error" && !running && (
+        <PanelSectionRow>
+          <div style={{ ...small, color: "#ff7b72" }}>{live.message}</div>
+        </PanelSectionRow>
+      )}
+
+      {result && (
+        <>
+          <PanelSectionRow>
+            <div style={{ ...small, opacity: 1 }}>
+              <div style={{ marginBottom: "6px" }}>
+                {result.gpu} · ANR {result.version} · {result.runs} runs, {result.failed ?? 0} failed
+              </div>
+              <div style={{ marginBottom: "6px" }}>
+                <b>Best: {result.best_path}</b>
+                {result.auto_path && result.auto_path !== result.best_path
+                  ? ` (auto picks ${result.auto_path})`
+                  : result.auto_path
+                  ? " (= auto)"
+                  : ""}
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", opacity: 0.7 }}>
+                    <th>2X, ms · dB</th>
+                    {sizes.map((s) => (
+                      <th key={s}>{s}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {paths.map((p) => (
+                    <tr key={p} style={{ fontWeight: p === result.best_path ? 700 : 400 }}>
+                      <td>{p}</td>
+                      {sizes.map((s) => {
+                        const e = result.table[s]?.[p];
+                        return (
+                          <td key={s}>
+                            {e?.ms ?? "—"}
+                            {e?.db ? <span style={{ opacity: 0.6 }}> · {e.db}</span> : null}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                  {Object.keys(result.fsr || {}).length > 0 && (
+                    <tr style={{ opacity: 0.8 }}>
+                      <td>FSR 3.1 FG</td>
+                      {sizes.map((s) => (
+                        <td key={s}>{result.fsr[s] ?? "—"}</td>
+                      ))}
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <div style={{ marginTop: "6px", opacity: 0.7 }}>
+                ms: GPU time per real frame at 2X, lower is better. dB: match to reference frames, higher is better.
+              </div>
+            </div>
+          </PanelSectionRow>
+          {result.best_path && (
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={busy || running}
+                onClick={() => act(() => applyPathAll(result.best_path as string))}
+              >
+                {bench?.preferred_path === result.best_path
+                  ? `${result.best_path} is applied (re-apply to all games)`
+                  : `Use ${result.best_path} in all games`}
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+          {bench?.preferred_path && (
+            <PanelSectionRow>
+              <ButtonItem layout="below" disabled={busy || running} onClick={() => act(() => applyPathAll("auto"))}>
+                Back to auto in all games
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+        </>
+      )}
+
+      {!running && (bench?.kit_mb || 0) > 0 && (
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={busy} onClick={() => act(deleteBenchmarkKit)}>
+            Delete the test kit ({bench?.kit_mb} MB)
+          </ButtonItem>
+        </PanelSectionRow>
       )}
     </PanelSection>
   );
@@ -597,6 +863,7 @@ function Content() {
     <>
       <PackageSection info={info} reload={reload} />
       <GameSection info={info} />
+      <BenchmarkSection />
       <HelpSection />
     </>
   );
