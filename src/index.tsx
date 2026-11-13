@@ -266,9 +266,10 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     }
   }, []);
 
-  const loadStatus = useCallback(async (id: string) => {
+  // silent: refresh after a settings change without disabling buttons, so the gamepad focus stays where it is.
+  const loadStatus = useCallback(async (id: string, silent = false) => {
     if (!id) return setStatus(null);
-    setLoadingStatus(true);
+    if (!silent) setLoadingStatus(true);
     try {
       setStatus(await getGameStatus(id));
       setLaunchOptionsState(await getLaunchOptions(Number(id)));
@@ -286,7 +287,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     } catch (e) {
       setStatus({ status: "error", message: errorText(e) });
     } finally {
-      setLoadingStatus(false);
+      if (!silent) setLoadingStatus(false);
     }
   }, []);
 
@@ -347,7 +348,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     } catch (e) {
       toast(errorText(e));
     }
-    await loadStatus(appid);
+    await loadStatus(appid, true);
   };
 
   const changeUpscaler = async (choice: string, watermark: boolean) => {
@@ -357,7 +358,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     } catch (e) {
       toast(errorText(e));
     }
-    await loadStatus(appid);
+    await loadStatus(appid, true);
   };
 
   const changeOpti = async (key: string, value: string) => {
@@ -382,7 +383,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     } catch (e) {
       toast(errorText(e));
     }
-    await loadStatus(appid);
+    await loadStatus(appid, true);
   };
 
   const changeRenderQuality = async (choice: string) => {
@@ -392,7 +393,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     } catch (e) {
       toast(errorText(e));
     }
-    await loadStatus(appid);
+    await loadStatus(appid, true);
   };
 
   const renderSize = (ratio: number | null | undefined) => {
@@ -412,7 +413,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       : `PROTON_FFX4_UPGRADE=1 %command% ${current}`.trim();
     setLaunchOptions(Number(appid), next);
     toast("Added PROTON_FFX4_UPGRADE=1. Start the game once (proton-cachyos or GE-Proton), then choose FSR 4.");
-    window.setTimeout(() => void loadStatus(appid), 500);
+    window.setTimeout(() => void loadStatus(appid, true), 500);
   };
 
   const showPerf = async () => {
@@ -453,7 +454,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       : `${anrLaunchLine} ${current}`.trim();
     setLaunchOptions(Number(appid), next);
     toast(`Launch options: ${next}`);
-    window.setTimeout(() => void loadStatus(appid), 500);
+    window.setTimeout(() => void loadStatus(appid, true), 500);
   };
   const outdated =
     patched && status?.game_version && status?.active_version && status.game_version !== status.active_version;
