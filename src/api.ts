@@ -147,6 +147,8 @@ export const setUpscaler = callable<
 export const getOptiSettings = callable<[appid: string], Result & { settings: Record<string, string> }>(
   "get_opti_settings"
 );
-export const setOptiSetting = callable<[appid: string, key: string, value: string], Result>("set_opti_setting");
+export const setOptiSetting = callable<[appid: string, key: string, value: string], Result & { dropped?: string[] }>(
+  "set_opti_setting"
+);
 export const copyProfile = callable<[appid: string, from_appid: string], Result>("copy_profile");
 export const resetProfile = callable<[appid: string], Result>("reset_profile");

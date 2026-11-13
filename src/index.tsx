@@ -369,7 +369,12 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       const r = await setOptiSetting(appid, key, value);
       ok = r.status === "success";
       if (!ok) toast(r.message || "Failed.");
-      else if (status?.running) toast("Saved: applies at the game's next start.");
+      else if (r.message && (r.message.includes("Turned off") || status?.running)) toast(r.message);
+      if (ok) {
+        // other settings may have been turned off with this one
+        const o = await getOptiSettings(appid);
+        if (o.status === "success") setOpti(o.settings);
+      }
     } catch (e) {
       toast(errorText(e));
     }
@@ -733,6 +738,11 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   />
                 </PanelSectionRow>
               )}
+              {opti.dynamic_mfg === "true" ? (
+                <PanelSectionRow>
+                  <div style={small}>FPS limit and a fixed multiplier are off while Dynamic MFG holds its own target.</div>
+                </PanelSectionRow>
+              ) : (
               <PanelSectionRow>
                 <SliderField
                   label="FPS limit"
@@ -746,6 +756,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   onChange={(v: number) => void changeOpti("fps_limit", String(v))}
                 />
               </PanelSectionRow>
+              )}
               <PanelSectionRow>
                 <ToggleField
                   label="Sharpening (RCAS)"

@@ -1584,17 +1584,38 @@ class Plugin:
             game = self._game(appid)
             running = bool(game and self._is_running(game))
             val = self._normalize_opti(key, value)
-            await asyncio.to_thread(self._apply_opti, appid, {key: val})
+            changes = {key: val}
+            # Settings that work against each other: the newest choice wins, the other is turned off.
+            # Dynamic MFG holds its own FPS target and picks the multiplier itself, so a fixed multiplier
+            # or an FPS limit would fight it (a 70 FPS limit with a 70 target forces more generated and fewer
+            # real frames).
+            dropped = []
+            state0 = self._load_state()
+            current = dict(state0["games"].get(appid, {}).get("opti", {}))
+            if key == "dynamic_mfg" and val == "true":
+                if current.get("fps_limit"):
+                    changes["fps_limit"] = "auto"
+                    dropped.append("FPS limit")
+                if current.get("fg_multiplier"):
+                    changes["fg_multiplier"] = "auto"
+                    dropped.append("fixed multiplier")
+            elif key in ("fps_limit", "fg_multiplier") and val != "auto" and current.get("dynamic_mfg") == "true":
+                changes["dynamic_mfg"] = "auto"
+                changes["dmfg_target"] = "auto"
+                dropped.append("Dynamic MFG")
+            await asyncio.to_thread(self._apply_opti, appid, changes)
             state = self._load_state()
             entry = state["games"].setdefault(appid, {})
             opti = entry.setdefault("opti", {})
-            if val == "auto":
-                opti.pop(key, None)
-            else:
-                opti[key] = val
+            for k, v in changes.items():
+                if v == "auto":
+                    opti.pop(k, None)
+                else:
+                    opti[k] = v
             self._save_state(state)
             when = "at the game's next start" if running else "when the game starts"
-            return {"status": "success", "message": f"Saved; applies {when}."}
+            note = f" Turned off: {', '.join(dropped)} (they work against each other)." if dropped else ""
+            return {"status": "success", "message": f"Saved; applies {when}.{note}", "dropped": dropped}
         except Exception as exc:
             decky.logger.error(f"[ANR] set_opti_setting {appid} {key}: {exc}")
             return {"status": "error", "message": str(exc)}
