@@ -724,8 +724,9 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                     description="0 = the display's refresh rate."
                     value={Number(opti.dmfg_target && opti.dmfg_target !== "auto" ? opti.dmfg_target : 0)}
                     min={0}
-                    max={144}
-                    step={6}
+                    max={120}
+                    step={10}
+                    notchTicksVisible
                     showValue
                     onChange={(v: number) => void changeOpti("dmfg_target", String(v))}
                   />
@@ -734,11 +735,12 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               <PanelSectionRow>
                 <SliderField
                   label="FPS limit"
-                  description="0 = off. Steadier frame pacing and less battery drain."
+                  description="0 = off. FPS on screen, in steps of 10. Steadier pacing and less battery drain."
                   value={Number(opti.fps_limit && opti.fps_limit !== "auto" ? opti.fps_limit : 0)}
                   min={0}
-                  max={144}
-                  step={6}
+                  max={120}
+                  step={10}
+                  notchTicksVisible
                   showValue
                   onChange={(v: number) => void changeOpti("fps_limit", String(v))}
                 />

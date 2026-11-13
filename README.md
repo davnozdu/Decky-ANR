@@ -33,6 +33,12 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
   the plugin takes the newest AMD-signed copy on the device, places it in OptiScaler's folder and picks the INT8
   model (RDNA 2/3/3.5) or FP8 (RDNA4). No copy yet? One button adds `PROTON_FFX4_UPGRADE=1` to the launch options.
   The choice survives ANR updates and the copied DLL is removed with ANR. Optional FSR watermark to check it runs.
+- **Game profiles**: every game keeps its own settings, re-applied after ANR updates and removed with ANR:
+  - **Render quality** (OptiScaler `UpscaleRatio`): Ultra Quality … Ultra Performance, with the render resolution shown;
+  - **Frame generation multiplier**: force 2X–6X (`[DLSSG] OverrideInterpolationCount`) in games that only ask for 2X
+    on non-RTX 50 GPUs; **Dynamic MFG** with a target FPS;
+  - **FPS limit** (steps of 10), **RCAS sharpening**, **OptiScaler FPS counter**;
+  - **Copy the profile** from another game, **Reset the profile**.
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
 - **Update notifications**: checks GitHub at start and every 6 hours; a Steam toast and a banner tell you when a new
   ANR FG release or a new Decky ANR version is out. ANR FG downloads in one click (SHA256-checked), the plugin
@@ -69,6 +75,9 @@ Notes:
 - Frame generation feels best with 40+ real FPS.
 - Forza Horizon 6 with FSR 4.1.1 INT8 (Quality, 720p→1080p) under ANR: ~37 real → ~74 shown FPS; FSR 3.1: ~42 → ~84.
   FSR 4 looks cleaner and costs more GPU time on a Radeon 890M.
+- Forced 3X in Forza Horizon 6 (FSR 4, Quality): ~29 real → ~88 shown FPS, 0 errors (2X: ~37 → ~74). The game's own
+  frame pacing is uneven at ~30 real FPS (p99 45–58 ms), which frame generation makes visible: raise real FPS first
+  (FSR 3.1, Performance render quality), keep 2X, and use the FPS limit for steady pacing.
 - OptiScaler logging is off in ANR's `OptiScaler.ini` (`LogLevel=5`); set `LogLevel=2` for `OptiScaler.log`.
 
 ## Build
