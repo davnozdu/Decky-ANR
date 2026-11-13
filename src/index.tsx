@@ -712,8 +712,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               </PanelSectionRow>
               <PanelSectionRow>
                 <ToggleField
-                  label="Dynamic multiplier (DMFG)"
-                  description="Picks the lowest multiplier that reaches the target FPS. Needs Streamline 2.11 in the game."
+                  label="Dynamic multiplier (DMFG) · experimental"
+                  description="Picks the lowest multiplier that reaches the target FPS (Streamline 2.11 games). Caused a GPU hang in Forza Horizon 6 on a Radeon 890M while switching multipliers: prefer a fixed multiplier."
                   checked={opti.dynamic_mfg === "true"}
                   onChange={(on: boolean) => void changeOpti("dynamic_mfg", on ? "true" : "auto")}
                 />

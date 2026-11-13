@@ -36,7 +36,8 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
 - **Game profiles**: every game keeps its own settings, re-applied after ANR updates and removed with ANR:
   - **Render quality** (OptiScaler `UpscaleRatio`): Ultra Quality … Ultra Performance, with the render resolution shown;
   - **Frame generation multiplier**: force 2X–6X (`[DLSSG] OverrideInterpolationCount`) in games that only ask for 2X
-    on non-RTX 50 GPUs; **Dynamic MFG** with a target FPS;
+    on non-RTX 50 GPUs; **Dynamic MFG** with a target FPS (experimental: in Forza Horizon 6 on a Radeon 890M
+    its rapid multiplier switching ended in a GPU page fault and reset; prefer a fixed multiplier);
   - **FPS limit** (steps of 10), **RCAS sharpening**, **OptiScaler FPS counter**;
   - **Copy the profile** from another game, **Reset the profile**.
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
