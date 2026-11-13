@@ -953,7 +953,11 @@ class Plugin:
         launch_options = (
             self._launch_with_override(current_launch_options, proxy) if proxy else current_launch_options
         )
+        previous = state["games"].get(appid, {})
         state["games"][appid] = {
+            "upscaler": previous.get("upscaler"),
+            "upscaler_watermark": previous.get("upscaler_watermark", False),
+            "managed_files": previous.get("managed_files", []),
             "name": game["name"],
             "target_dir": str(target),
             "mode": kind,
@@ -963,6 +967,10 @@ class Plugin:
             "patched_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save_state(state)
+        try:
+            self._reapply_upscaler(appid, target)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] re-applying the upscaler for {appid}: {exc}")
         return {
             "status": "success",
             "launch_options": launch_options,
@@ -1010,6 +1018,8 @@ class Plugin:
             if not ok:
                 return {"status": "error", "message": output.splitlines()[-1] if output else "uninstall failed",
                         "output": output}
+        self._remove_managed_files(appid)
+        state = self._load_state()
         state["games"].pop(appid, None)
         self._save_state(state)
         return {
@@ -1196,6 +1206,244 @@ class Plugin:
         except Exception as exc:
             decky.logger.error(f"[ANR] get_performance {appid}: {exc}")
             return {"status": "error", "message": str(exc), "sessions": []}
+
+    # ── Upscaler (OptiScaler) ─────────────────────────────────────────────────
+
+    FSR4_DLL = "amdxcffx64.dll"
+    RDNA4_DEVICE_IDS = {0x7550, 0x7551, 0x7590, 0x7591, 0x7599, 0x75A0, 0x75A3}
+    UPSCALERS = {
+        "package": "As in the ANR package",
+        "fsr31": "FSR 3.1",
+        "fsr4": "FSR 4 (ML)",
+        "xess": "XeSS",
+    }
+
+    def _optiscaler_ini(self, target: Path, desc: dict) -> Path | None:
+        if desc.get("mode") == "full":
+            return target / "OptiScaler.ini"
+        if desc.get("mode") == "addon" and desc.get("anr_dir"):
+            try:
+                rec = json.loads((desc["anr_dir"] / INSTALL_RECORD).read_text(encoding="utf-8"))
+                ini = Path(rec.get("optiscaler_ini", ""))
+                return ini if ini.exists() else None
+            except Exception:
+                return None
+        return None
+
+    def _optiscaler_main_dir(self, ini: Path) -> Path:
+        """OptiScaler's working folder (MainDllPath), where it looks for amdxcffx64.dll and custom providers:
+        [Libraries] OptiDllPath, else ./OptiScaler next to the ini where it exists, else the ini's folder
+        (the same rule as ANR's add-on installer)."""
+        game = ini.parent
+        value = None
+        section = None
+        for line in ini.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"\s*\[([^\]]+)\]", line)
+            if m:
+                section = m.group(1)
+            elif section == "Libraries" and re.match(r"\s*OptiDllPath\s*=", line):
+                value = line.split("=", 1)[1].strip()
+        if value and value.lower() != "auto":
+            v = value.replace("\\", "/")
+            if re.match(r"^[A-Za-z]:", v):
+                v = re.sub(r"^[A-Za-z]:", "", v)  # a Windows path inside the prefix: best effort
+            path = Path(v) if v.startswith("/") else game / v
+            if path.is_dir():
+                return path
+        return game / "OptiScaler" if (game / "OptiScaler").is_dir() else game
+
+    def _set_ini_sections(self, ini: Path, values: dict[tuple[str, str], str]) -> None:
+        lines = ini.read_text(encoding="utf-8", errors="replace").split("\n")
+        pending = dict(values)
+        section = None
+        for i, line in enumerate(lines):
+            m = re.match(r"\s*\[([^\]]+)\]", line)
+            if m:
+                section = m.group(1)
+                continue
+            if "=" in line and not line.lstrip().startswith((";", "#")):
+                key = line.split("=", 1)[0].strip()
+                if (section, key) in pending:
+                    lines[i] = f"{key}={pending.pop((section, key))}"
+        for (sec, key), val in pending.items():
+            header = next((i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"), None)
+            if header is None:
+                lines += [f"[{sec}]", f"{key}={val}"]
+            else:
+                lines.insert(header + 1, f"{key}={val}")
+        ini.write_text("\n".join(lines), encoding="utf-8")
+
+    def _gpu_is_rdna4(self) -> bool:
+        for dev in Path("/sys/class/drm").glob("card*/device"):
+            try:
+                if (dev / "vendor").read_text().strip().lower() != "0x1002":
+                    continue
+                if int((dev / "device").read_text().strip(), 16) in self.RDNA4_DEVICE_IDS:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _pe_string(data: bytes, name: str) -> str | None:
+        key = name.encode("utf-16-le") + b"\x00\x00"
+        i = data.find(key)
+        if i < 0:
+            return None
+        j = i + len(key)
+        while j < len(data) and data[j:j + 2] == b"\x00\x00":
+            j += 2
+        end = data.find(b"\x00\x00", j)
+        while end > 0 and (end - j) % 2:
+            end = data.find(b"\x00\x00", end + 1)
+        try:
+            return data[j:end].decode("utf-16-le").strip() or None
+        except Exception:
+            return None
+
+    def _fsr4_dll_info(self, path: Path) -> dict | None:
+        try:
+            if path.stat().st_size < 1_000_000:
+                return None
+            data = path.read_bytes()
+        except OSError:
+            return None
+        if data[:2] != b"MZ":
+            return None
+        company = self._pe_string(data, "CompanyName") or ""
+        if "Advanced Micro Devices" not in company:
+            return None
+        version = self._pe_string(data, "FileVersion") or "0"
+        return {"path": str(path), "version": version, "size": len(data)}
+
+    def _find_fsr4_dll(self, appid: str | None) -> dict | None:
+        """Newest AMD-signed amdxcffx64.dll that Proton put into a prefix (PROTON_FFX4_UPGRADE), this game's first."""
+        found: list[dict] = []
+        for library in self._steam_library_paths():
+            compat = library / "steamapps" / "compatdata"
+            if not compat.exists():
+                continue
+            order = sorted(compat.iterdir(), key=lambda p: p.name != str(appid))
+            for prefix in order:
+                info = self._fsr4_dll_info(prefix / "pfx" / "drive_c" / "windows" / "system32" / self.FSR4_DLL)
+                if info:
+                    info["own_prefix"] = prefix.name == str(appid)
+                    found.append(info)
+        if not found:
+            return None
+        found.sort(key=lambda x: (_version_key(x["version"]), x["own_prefix"]), reverse=True)
+        return found[0]
+
+    def _upscaler_values(self, choice: str, watermark: bool) -> dict[tuple[str, str], str]:
+        wm = "true" if watermark else "auto"
+        if choice == "fsr31":
+            return {("Upscalers", "Dx12Upscaler"): "ffx", ("FSR", "UpscalerIndex"): "1",
+                    ("FSR", "Fsr4GpuSupport"): "auto", ("FSR", "Fsr4Model"): "auto",
+                    ("FSR", "Fsr4EnableWatermark"): "auto"}
+        if choice == "fsr4":
+            rdna4 = self._gpu_is_rdna4()
+            return {("Upscalers", "Dx12Upscaler"): "ffx", ("FSR", "UpscalerIndex"): "0",
+                    ("FSR", "Fsr4GpuSupport"): "auto" if rdna4 else "2",
+                    ("FSR", "Fsr4Model"): "auto" if rdna4 else "1",
+                    ("FSR", "Fsr4EnableWatermark"): wm}
+        if choice == "xess":
+            return {("Upscalers", "Dx12Upscaler"): "xess", ("FSR", "Fsr4EnableWatermark"): "auto"}
+        return {}
+
+    def _apply_upscaler(self, appid: str, target: Path, choice: str, watermark: bool) -> dict:
+        desc = self._describe_dir(target)
+        ini = self._optiscaler_ini(target, desc)
+        if not ini or not ini.exists():
+            return {"status": "error", "message": "OptiScaler.ini not found for this game."}
+        state = self._load_state()
+        entry = state["games"].setdefault(appid, {})
+        managed = entry.get("managed_files", [])
+        dll_dest = self._optiscaler_main_dir(ini) / self.FSR4_DLL
+        note = ""
+        if choice == "fsr4":
+            src = self._find_fsr4_dll(appid)
+            if not src:
+                return {"status": "error", "need_ffx4_upgrade": True,
+                        "message": "No FSR 4 driver DLL on this device yet. Add PROTON_FFX4_UPGRADE=1 to the "
+                                   "game's launch options (proton-cachyos or GE-Proton), start the game once, "
+                                   "then choose FSR 4 again."}
+            existing = self._fsr4_dll_info(dll_dest) if dll_dest.exists() else None
+            ours = any(m.get("path") == str(dll_dest) for m in managed)
+            if dll_dest.exists() and not ours and not existing:
+                return {"status": "error", "message": f"{dll_dest.name} in the game folder is not AMD's; not replaced."}
+            if not existing or _version_key(existing["version"]) < _version_key(src["version"]):
+                shutil.copy2(src["path"], dll_dest)
+            if not ours:
+                managed.append({"path": str(dll_dest), "sha256": self._file_sha256(dll_dest)})
+            note = f" (AMD FidelityFX {src['version']})"
+        else:
+            # Remove the DLL only if we put it there and it is unchanged.
+            keep = []
+            for m in managed:
+                p = Path(m.get("path", ""))
+                if p.name == self.FSR4_DLL and p.exists() and self._file_sha256(p) == m.get("sha256"):
+                    p.unlink()
+                elif p.exists():
+                    keep.append(m)
+            managed = keep
+        values = self._upscaler_values(choice, watermark)
+        if values:
+            self._set_ini_sections(ini, values)
+        entry["upscaler"] = choice
+        entry["upscaler_watermark"] = bool(watermark)
+        entry["managed_files"] = managed
+        self._save_state(state)
+        label = self.UPSCALERS.get(choice, choice)
+        msg = f"Upscaler: {label}{note}. Restart the game."
+        if choice == "package":
+            msg = "Upscaler settings are as the ANR package sets them on the next reinstall. Restart the game."
+        return {"status": "success", "message": msg}
+
+    async def set_upscaler(self, appid: str, choice: str, watermark: bool = False) -> dict:
+        try:
+            if choice not in self.UPSCALERS:
+                return {"status": "error", "message": f"Unknown upscaler {choice}"}
+            game = self._game(str(appid))
+            if not game:
+                return {"status": "error", "message": "The game is not in the Steam library."}
+            if self._is_running(game):
+                return {"status": "error", "message": "Close the game first."}
+            target = self._resolve_target(game, self._load_state()["games"].get(str(appid)))
+            if not target:
+                return {"status": "error", "message": "ANR FG is not installed in this game."}
+            return await asyncio.to_thread(self._apply_upscaler, str(appid), target, choice, bool(watermark))
+        except Exception as exc:
+            decky.logger.error(f"[ANR] set_upscaler {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def get_upscaler(self, appid: str) -> dict:
+        try:
+            entry = self._load_state()["games"].get(str(appid), {})
+            src = await asyncio.to_thread(self._find_fsr4_dll, str(appid))
+            return {"status": "success", "choice": entry.get("upscaler", "package"),
+                    "watermark": bool(entry.get("upscaler_watermark")),
+                    "fsr4_source": src, "rdna4": self._gpu_is_rdna4(),
+                    "options": [{"value": k, "label": v} for k, v in self.UPSCALERS.items()]}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    def _reapply_upscaler(self, appid: str, target: Path) -> None:
+        entry = self._load_state()["games"].get(appid, {})
+        choice = entry.get("upscaler")
+        if choice and choice != "package":
+            r = self._apply_upscaler(appid, target, choice, bool(entry.get("upscaler_watermark")))
+            decky.logger.info(f"[ANR] re-applied upscaler {choice} for {appid}: {r.get('message')}")
+
+    def _remove_managed_files(self, appid: str) -> None:
+        state = self._load_state()
+        entry = state["games"].get(appid, {})
+        for m in entry.get("managed_files", []):
+            p = Path(m.get("path", ""))
+            try:
+                if p.exists() and self._file_sha256(p) == m.get("sha256"):
+                    p.unlink()
+            except OSError:
+                pass
 
     # ── Benchmark (the ANR FG test kit) ───────────────────────────────────────
 

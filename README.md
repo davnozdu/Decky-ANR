@@ -28,6 +28,11 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
   path to all games and new installs in one click. On a Radeon 890M, ANR's `auto` picks `coopmat` while
   `portable-linalg` is ~24% faster and more accurate.
 - **Performance by compute path** per game, from ANR's own logs (GPU ms per real frame, real → shown FPS, errors).
+- **Upscaler per game** (OptiScaler under ANR FG): as in the ANR package, FSR 3.1, **FSR 4 (ML)** or XeSS. FSR 4 uses
+  AMD's own `amdxcffx64.dll` that Proton puts into a prefix (`PROTON_FFX4_UPGRADE`, proton-cachyos or GE-Proton):
+  the plugin takes the newest AMD-signed copy on the device, places it in OptiScaler's folder and picks the INT8
+  model (RDNA 2/3/3.5) or FP8 (RDNA4). No copy yet? One button adds `PROTON_FFX4_UPGRADE=1` to the launch options.
+  The choice survives ANR updates and the copied DLL is removed with ANR. Optional FSR watermark to check it runs.
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
 - **Update notifications**: checks GitHub at start and every 6 hours; a Steam toast and a banner tell you when a new
   ANR FG release or a new Decky ANR version is out. ANR FG downloads in one click (SHA256-checked), the plugin
@@ -62,6 +67,8 @@ Notes:
 - In-game, portable-linalg vs coopmat was ~6.0 vs ~6.4 ms per real frame: the game's own rendering bounds the
   frame rate, so the kit's 24% shows as a small in-game gain.
 - Frame generation feels best with 40+ real FPS.
+- Forza Horizon 6 with FSR 4.1.1 INT8 (Quality, 720p→1080p) under ANR: ~37 real → ~74 shown FPS; FSR 3.1: ~42 → ~84.
+  FSR 4 looks cleaner and costs more GPU time on a Radeon 890M.
 - OptiScaler logging is off in ANR's `OptiScaler.ini` (`LogLevel=5`); set `LogLevel=2` for `OptiScaler.log`.
 
 ## Build

@@ -25,6 +25,9 @@ import {
   getAnrInfo,
   getGameStatus,
   getPerformance,
+  getUpscaler,
+  setUpscaler,
+  UpscalerInfo,
   PerfSession,
   installBundled,
   listGames,
@@ -234,6 +237,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     summary?: { path: string; sessions: number; total_ms: number; real_fps: number | null }[];
   } | null>(null);
   const [launchOptions, setLaunchOptionsState] = useState<string>("");
+  const [upscaler, setUpscalerInfo] = useState<UpscalerInfo | null>(null);
 
   const loadGames = useCallback(async () => {
     setLoadingGames(true);
@@ -261,6 +265,11 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     try {
       setStatus(await getGameStatus(id));
       setLaunchOptionsState(await getLaunchOptions(Number(id)));
+      try {
+        setUpscalerInfo(await getUpscaler(id));
+      } catch {
+        setUpscalerInfo(null);
+      }
     } catch (e) {
       setStatus({ status: "error", message: errorText(e) });
     } finally {
@@ -326,6 +335,30 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       toast(errorText(e));
     }
     await loadStatus(appid);
+  };
+
+  const changeUpscaler = async (choice: string, watermark: boolean) => {
+    try {
+      const r = await setUpscaler(appid, choice, watermark);
+      toast(r.message || r.status);
+    } catch (e) {
+      toast(errorText(e));
+    }
+    await loadStatus(appid);
+  };
+
+  const addFfx4Upgrade = async () => {
+    const current = await getLaunchOptions(Number(appid));
+    if (current.includes("PROTON_FFX4_UPGRADE")) {
+      toast("PROTON_FFX4_UPGRADE is already set: start the game once, then choose FSR 4.");
+      return;
+    }
+    const next = current.includes("%command%")
+      ? `PROTON_FFX4_UPGRADE=1 ${current}`
+      : `PROTON_FFX4_UPGRADE=1 %command% ${current}`.trim();
+    setLaunchOptions(Number(appid), next);
+    toast("Added PROTON_FFX4_UPGRADE=1. Start the game once (proton-cachyos or GE-Proton), then choose FSR 4.");
+    window.setTimeout(() => void loadStatus(appid), 500);
   };
 
   const showPerf = async () => {
@@ -532,6 +565,45 @@ function GameSection({ info }: { info: AnrInfo | null }) {
 
           {patched && (
             <>
+              {upscaler?.options && (
+                <>
+                  <PanelSectionRow>
+                    <DropdownItem
+                      label="Upscaler"
+                      description={
+                        upscaler.choice === "fsr4"
+                          ? `FSR 4 ${upscaler.rdna4 ? "FP8" : "INT8"} model${
+                              upscaler.fsr4_source ? `, AMD FidelityFX ${upscaler.fsr4_source.version}` : ""
+                            }`
+                          : "OptiScaler's upscaler under ANR FG. The game's DLSS option drives it."
+                      }
+                      selectedOption={upscaler.choice || "package"}
+                      rgOptions={upscaler.options.map((o) => ({
+                        data: o.value,
+                        label: o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs setup)` : o.label,
+                      }))}
+                      onChange={(o) => void changeUpscaler(String(o.data), Boolean(upscaler.watermark))}
+                    />
+                  </PanelSectionRow>
+                  {!upscaler.fsr4_source && (
+                    <PanelSectionRow>
+                      <ButtonItem layout="below" onClick={addFfx4Upgrade}>
+                        Get FSR 4 through Proton (PROTON_FFX4_UPGRADE)
+                      </ButtonItem>
+                    </PanelSectionRow>
+                  )}
+                  {upscaler.choice === "fsr4" && (
+                    <PanelSectionRow>
+                      <ToggleField
+                        label="Show the FSR watermark"
+                        description="Shows which FSR runs, to check FSR 4 is active."
+                        checked={Boolean(upscaler.watermark)}
+                        onChange={(on: boolean) => void changeUpscaler(upscaler.choice as string, on)}
+                      />
+                    </PanelSectionRow>
+                  )}
+                </>
+              )}
               <PanelSectionRow>
                 <SliderField
                   label="Generated frames"

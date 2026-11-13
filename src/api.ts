@@ -126,3 +126,16 @@ export const cancelBenchmark = callable<[], Result>("cancel_benchmark");
 export const getBenchmark = callable<[], BenchState>("get_benchmark");
 export const applyPathAll = callable<[path: string], Result>("apply_path_all");
 export const deleteBenchmarkKit = callable<[], Result>("delete_benchmark_kit");
+
+export type UpscalerInfo = Result & {
+  choice?: string;
+  watermark?: boolean;
+  rdna4?: boolean;
+  fsr4_source?: { path: string; version: string; own_prefix: boolean } | null;
+  options?: { value: string; label: string }[];
+};
+export const getUpscaler = callable<[appid: string], UpscalerInfo>("get_upscaler");
+export const setUpscaler = callable<
+  [appid: string, choice: string, watermark: boolean],
+  Result & { need_ffx4_upgrade?: boolean }
+>("set_upscaler");
