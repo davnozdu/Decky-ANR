@@ -35,6 +35,17 @@ Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Dec
 
 Games patched by Decky Framegen must be unpatched there first: its OptiScaler 0.9.4 cannot load custom FG providers.
 
+## Tested
+
+| Device | OS / Proton | Game | Result |
+|---|---|---|---|
+| ROG Xbox Ally X (Ryzen AI Z2 Extreme, Radeon 890M) | CachyOS Handheld, proton-cachyos 11.0 | Forza Horizon 6 (D3D12, Streamline DLSS-G) | Works: 2X at 1920x1080, ~31 real FPS → ~63 shown, coopmat path, ~2–4 ms GPU per generated frame, 0 generation errors |
+
+Notes:
+- Frame generation starts when gameplay starts (menus may not use it); the game may re-create it on scene changes.
+- Frame generation feels best with 40+ real FPS: raise or remove the game's own frame-rate cap.
+- OptiScaler logging is off in ANR's `OptiScaler.ini` (`LogLevel=5`); set `LogLevel=2` for `OptiScaler.log`.
+
 ## Build
 
 ```sh

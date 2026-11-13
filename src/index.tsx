@@ -326,6 +326,31 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             </ButtonItem>
           </PanelSectionRow>
 
+          {patched && (
+            <PanelSectionRow>
+              <div
+                style={{
+                  ...small,
+                  opacity: 1,
+                  padding: "8px",
+                  borderRadius: "6px",
+                  background: "rgba(63,185,80,0.12)",
+                }}
+              >
+                <b>Next steps</b>
+                <br />
+                1. Start the game from Steam as usual.
+                <br />
+                2. Graphics / Video settings: turn on Frame Generation and pick <b>DLSS Frame Generation</b> (the
+                NVIDIA option, not FSR). ANR FG takes its place.
+                <br />
+                3. Turn in-game V-Sync off; limit FPS from the Steam menu if needed.
+                <br />
+                4. Check it works: "Show the newest nr_fg log" below, or the FPS counter.
+              </div>
+            </PanelSectionRow>
+          )}
+
           {patched && status?.mode === "full" && (
             <>
               <PanelSectionRow>
@@ -423,11 +448,12 @@ function HelpSection() {
     <PanelSection title="How to use">
       <PanelSectionRow>
         <div style={small}>
-          1. Install ANR FG into a game: the plugin sets the launch option WINEDLLOVERRIDES for OptiScaler.
+          1. Choose a game above and press Install ANR FG: the plugin sets the launch option WINEDLLOVERRIDES.
           <br />
-          2. Start the game and turn on DLSS Frame Generation (the NVIDIA option): ANR FG takes its place.
+          2. Start the game. In its graphics settings turn on DLSS Frame Generation (the NVIDIA option, not FSR):
+          ANR FG takes its place. Turn in-game V-Sync off.
           <br />
-          3. OptiScaler's menu opens with Insert. Games need D3D12 or Vulkan with DLSS-G.
+          3. Works in D3D12 / Vulkan games that offer DLSS Frame Generation. OptiScaler's menu: Insert key.
           <br />
           Games patched by Decky Framegen must be unpatched there first.
         </div>
