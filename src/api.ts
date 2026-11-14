@@ -24,6 +24,7 @@ export type GameStatus = Result & {
   name?: string;
   installed?: boolean;
   patched?: boolean;
+  managed?: boolean;
   mode?: "full" | "addon" | null;
   proxy?: string | null;
   target_dir?: string;

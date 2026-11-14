@@ -330,6 +330,14 @@ function LsfgControls({ profile, busy, onChange }: {
   return (
     <>
       <PanelSectionRow>
+        <div style={{ ...small, opacity: 1, fontWeight: 700 }}>{t("Lossless Scaling settings")}</div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField label={t("Performance mode")} description={t("Lighter model: cheaper on the GPU, a little less accurate.")}
+          checked={Boolean(profile?.performance_mode)} disabled={busy}
+          onChange={(on: boolean) => onChange({ performance_mode: on })} />
+      </PanelSectionRow>
+      <PanelSectionRow>
         <SliderField label={t("Lossless multiplier")} description={t("{0}X: {1} generated frame(s) per real frame.", m, m - 1)}
           value={m} min={2} max={4} step={1} showValue notchTicksVisible disabled={busy}
           onChange={(v: number) => onChange({ multiplier: v })} />
@@ -338,11 +346,6 @@ function LsfgControls({ profile, busy, onChange }: {
         <SliderField label={t("Flow scale")} description={t("Lower = faster, softer motion estimation (recommended 50–75% on handhelds).")}
           value={flow} min={25} max={100} step={5} showValue valueSuffix="%" disabled={busy}
           onChange={(v: number) => onChange({ flow_scale: v / 100 })} />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ToggleField label={t("Performance mode")} description={t("Lighter model: cheaper on the GPU, a little less accurate.")}
-          checked={Boolean(profile?.performance_mode)} disabled={busy}
-          onChange={(on: boolean) => onChange({ performance_mode: on })} />
       </PanelSectionRow>
       <PanelSectionRow>
         <div style={small}>
@@ -653,6 +656,18 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             </Field>
           </PanelSectionRow>
 
+          <PanelSectionRow>
+            <ButtonItem layout="below"
+              description={status?.running ? t("Close the game to restore it.")
+                : patched || status?.lsfg || status?.managed
+                ? t("Removes this plugin's patches, disables its Lossless Scaling profile and restores backed-up files. Other mods and shared imported libraries are kept.")
+                : t("This game has no changes managed by this plugin.")}
+              disabled={busy !== null || loadingStatus || status?.running || !(patched || status?.lsfg || status?.managed)}
+              onClick={doUnpatch}>
+              {busy === "unpatch" ? t("Restoring game…") : t("Restore game (remove plugin patches)")}
+            </ButtonItem>
+          </PanelSectionRow>
+
           {status?.proton && (
             <PanelSectionRow>
               <div style={{ ...small, color: status.proton.native ? "#ffd866" : undefined }}>
@@ -732,22 +747,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             </ButtonItem>
           </PanelSectionRow>
 
-          {patched && (
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                description={
-                  status?.running
-                    ? t("Close the game to remove it.")
-                    : t("Restores the game's files and launch options; the game's profile is deleted.")
-                }
-                disabled={busy !== null || status?.running}
-                onClick={doUnpatch}
-              >
-                {busy === "unpatch" ? t("Removing…") : t("Remove frame generation from this game")}
-              </ButtonItem>
-            </PanelSectionRow>
-          )}
+
 
           {patched && (
             <PanelSectionRow>
@@ -802,6 +802,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   label={t("Frame generator")}
                   description={busy === "generator"
                     ? t("Preparing generator… First XeFG setup downloads about 75 MB.")
+                    : genChoice === "lsfg"
+                    ? t("Lossless Scaling is selected. Performance mode, multiplier and motion scale are below. Close the game to change settings.")
                     : t("Close the game to switch. XeFG is a beta for DirectX 12 games; Proton compatibility is experimental.")}
                   disabled={busy !== null || status?.running}
                   selectedOption={status?.generator?.choice || "anr"}

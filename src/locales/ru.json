@@ -386,5 +386,13 @@
   "Automatic ANR FG updates disabled.": "Автоматическое обновление ANR FG отключено.",
   "ANR FG {0} updated automatically. Running games update after closing.": "ANR FG {0} обновлён автоматически. Запущенные игры обновятся после закрытия.",
   "Missing SHA-256 for {0}; automatic update cancelled": "Нет SHA-256 для {0}; автоматическое обновление отменено",
-  "ANR auto-update: {0}": "Автообновление ANR: {0}"
+  "ANR auto-update: {0}": "Автообновление ANR: {0}",
+  "Lossless Scaling settings": "Настройки Lossless Scaling",
+  "Close the game to restore it.": "Закройте игру для восстановления.",
+  "Removes this plugin's patches, disables its Lossless Scaling profile and restores backed-up files. Other mods and shared imported libraries are kept.": "Удаляет патчи этого плагина, отключает профиль Lossless Scaling и восстанавливает резервные копии. Сторонние модификации и общие импортированные библиотеки сохраняются.",
+  "This game has no changes managed by this plugin.": "В этой игре нет изменений, которыми управляет плагин.",
+  "Restoring game…": "Восстановление игры…",
+  "Restore game (remove plugin patches)": "Вернуть игру в исходное состояние",
+  "Plugin patches removed from {0}. Lossless Scaling disabled for this game.": "Патчи плагина удалены из {0}. Lossless Scaling для этой игры отключён.",
+  "Lossless Scaling is selected. Performance mode, multiplier and motion scale are below. Close the game to change settings.": "Выбран Lossless Scaling. Ниже — режим производительности, множитель и масштаб движения. Для изменения настроек закройте игру."
 }

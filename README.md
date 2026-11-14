@@ -38,6 +38,17 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## Restore game and visible LS controls (0.2.6)
+
+After selecting Lossless Scaling, **Performance mode** is the first switch under **Lossless Scaling settings**;
+multiplier and motion scale follow it. Close the game before changing these settings.
+
+**Restore game (remove plugin patches)** is directly below the selected game's status, also for LS-only games.
+It removes the plugin's patches, restores backed-up files and removes that game's LS profile. Other mods,
+other game profiles and shared imported libraries remain. Already restored games show a disabled button.
+ANR auto-update does not re-patch a game after removal. This restores plugin-managed changes, not in-game
+settings you changed manually or third-party modifications installed separately.
+
 ## Automatic ANR updates
 
 **Automatically update ANR FG** is enabled by default. At startup and every 6 hours the plugin checks upstream,

@@ -888,7 +888,7 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
             return current
         parts = [p for p in m.group(1).strip("\"'").split(";") if p and p != f"{base}=n,b"]
         replacement = f'WINEDLLOVERRIDES="{";".join(parts)}"' if parts else ""
-        result = " ".join((current[: m.start()] + replacement + current[m.end():]).split())
+        result = " ".join(part for part in (current[:m.start()].rstrip(), replacement, current[m.end():].lstrip()) if part)
         return "" if result == "%command%" else result
 
     # ── nr_fg.ini ─────────────────────────────────────────────────────────────
@@ -1032,7 +1032,7 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
         if target is None:
             return {
                 "status": "success", "appid": appid, "name": game["name"], "installed": True,
-                "patched": False, "candidates": candidates,
+                "patched": False, "managed": bool(entry), "candidates": candidates,
                 "suggested_dir": candidates[0]["dir"] if candidates else str(root),
                 "conflict": self._conflict_message(Path(candidates[0]["dir"])) if candidates else None,
                 "lsfg": self._lsfg_profiles().get(appid),
@@ -1055,7 +1055,7 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
             "appid": appid,
             "name": game["name"],
             "installed": True,
-            "patched": desc["mode"] is not None,
+            "patched": desc["mode"] is not None, "managed": bool(entry),
             "mode": desc["mode"],
             "proxy": desc["proxy"] or (entry or {}).get("proxy"),
             "target_dir": str(target),
@@ -1241,23 +1241,65 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
         target = self._resolve_target(game, entry)
         proxy = (entry or {}).get("proxy")
         output = ""
-        if target is not None:
-            desc = self._describe_dir(target)
-            proxy = desc["proxy"] or proxy
-            ok, output = self._unpatch_dir(target, (entry or {}).get("version") or self._active_version() or "")
-            if not ok:
-                return {"status": "error", "message": output.splitlines()[-1] if output else "uninstall failed",
-                        "output": output}
-        self._remove_managed_files(appid)
+        old_lsfg = state.get("lsfg_profiles", {}).get(appid)
+        cfg = self._lsfg_config()
+        old_config = cfg.read_bytes() if cfg.exists() else None
+
+        def restore_lsfg():
+            if old_lsfg is None:
+                return
+            previous = self._load_state()
+            if old_lsfg is not None:
+                previous.setdefault("lsfg_profiles", {})[appid] = old_lsfg
+            self._save_state(previous)
+            if old_config is None:
+                cfg.unlink(missing_ok=True)
+            else:
+                cfg.parent.mkdir(parents=True, exist_ok=True)
+                cfg.write_bytes(old_config)
+
+        try:
+            if old_lsfg is not None:
+                state.get("lsfg_profiles", {}).pop(appid, None)
+                self._save_state(state)
+                self._lsfg_write_config()
+                if self._lsfg_installed() and cfg.exists():
+                    valid, detail = self._lsfg_validate()
+                    if not valid:
+                        raise ValueError("lsfg-vk rejected the configuration: " + detail[-300:])
+            if target is not None:
+                desc = self._describe_dir(target)
+                proxy = desc["proxy"] or proxy
+                ok, output = self._unpatch_dir(target, (entry or {}).get("version") or self._active_version() or "")
+                if not ok:
+                    restore_lsfg()
+                    return {"status": "error", "message": output.splitlines()[-1] if output else "uninstall failed", "output": output}
+            self._remove_managed_files(appid)
+        except Exception:
+            restore_lsfg()
+            raise
         state = self._load_state()
         state["games"].pop(appid, None)
         self._save_state(state)
-        return {
-            "status": "success",
-            "launch_options": self._launch_without_override(current_launch_options, proxy),
-            "output": output,
-            "message": f"ANR FG removed from {game['name']}.",
-        }
+        launch = self._launch_without_override(current_launch_options, proxy)
+        # A pre-existing override belongs to the user (e.g. a restored ReShade DLL).
+        original = (entry or {}).get("original_launch_options", "")
+        if proxy:
+            base = proxy[:-4] if proxy.lower().endswith(".dll") else proxy
+            match = self._OVERRIDE_RE.search(original)
+            saved = next((p for p in match.group(1).strip("\"'").split(";") if p.split("=", 1)[0] == base), None) if match else None
+            remaining = self._OVERRIDE_RE.search(launch)
+            if remaining and any(p.split("=", 1)[0] == base for p in remaining.group(1).strip("\"'").split(";")):
+                saved = None  # The user changed this override after installing the plugin.
+            if saved:
+                match = self._OVERRIDE_RE.search(launch)
+                if match:
+                    parts = [p for p in match.group(1).strip("\"'").split(";") if p and p.split("=", 1)[0] != base]
+                    launch = launch[:match.start()] + 'WINEDLLOVERRIDES="' + ';'.join([saved] + parts) + '"' + launch[match.end():]
+                else:
+                    launch = 'WINEDLLOVERRIDES="' + saved + '" ' + (launch or "%command%")
+        return {"status": "success", "launch_options": launch,
+                "output": output, "message": f"Plugin patches removed from {game['name']}. Lossless Scaling disabled for this game."}
 
     async def unpatch_game(self, appid: str, current_launch_options: str = "") -> dict:
         try:
