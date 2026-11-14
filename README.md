@@ -10,6 +10,30 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## Beta: alternative XeFG frame generator
+
+Version **0.2.0-beta.1** adds a per-game **Frame generator** selector: ANR FG or
+**XeFG XMX Port (Build 10)**. Install ANR normally first; then close the game and choose XeFG.
+The first selection downloads about 75 MB: the pinned upstream provider and Intel XeSS SDK 3.0.2,
+both checked against SHA-256. Only the XeFG runtime, provider programs and licenses are installed.
+ANR stays installed for switching back. The upscaler and multiplier remain independent.
+
+XeFG is for **DirectX 12** games with DLSS FG inputs, using **SDR or HDR10** (not scRGB).
+Start with 2X. Check **Show generator log** after starting the game (`Creating XeFG context`).
+
+Tested: Forza Horizon 6 on ROG Xbox Ally X (Radeon 890M, Mesa 26.2.6, proton-cachyos 11), FSR 4 Balanced, 2X:
+XeFG ~73 FPS shown (69–84 while driving) vs ANR FG ~71 (65–86), measured from gamescope; XeFG ran the
+ported XMX model through its DXIL path (`Network path: XMX (native), model 16`, CUDA route inactive), no GPU faults,
+and showed fewer artifacts. Other games and GPUs: unverified.
+The loader detected as Vulkan (`winmm.dll`) cannot select XeFG. Other games need manual DX12 verification.
+
+The generator choice survives reinstall / Update all. Copy/reset profile changes tuning and keeps
+the selected generator. ANR-only controls are hidden while XeFG is selected. Removal also cleans up
+managed XeFG files in add-on installs, preserving changed files and logs.
+
+Sources: [XeFG Build 10](https://github.com/realdody/dlssg-to-xefg-xmx/releases/tag/build-10),
+[Intel XeSS SDK](https://github.com/intel/xess/releases/tag/v3.0.2). Third-party notices: `licenses/`.
+
 ## Features
 
 - Bundled ANR FG package (`anr-fg-<version>-full.zip`, includes Apex's OptiScaler build), plus a

@@ -25,6 +25,7 @@ export type GameStatus = Result & {
   target_rel?: string;
   game_version?: string | null;
   active_version?: string | null;
+  generator?: { choice: "anr" | "xefg" | "custom"; provider: string; build: string; ready: boolean; available: boolean };
   settings?: Record<string, string | null>;
   log_file?: string | null;
   candidates?: Candidate[];
@@ -152,3 +153,5 @@ export const setOptiSetting = callable<[appid: string, key: string, value: strin
 );
 export const copyProfile = callable<[appid: string, from_appid: string], Result>("copy_profile");
 export const resetProfile = callable<[appid: string], Result>("reset_profile");
+
+export const setFrameGenerator = callable<[appid: string, choice: string], Result>("set_frame_generator");

@@ -41,6 +41,7 @@ import {
   readGameLog,
   setActiveVersion,
   setGameSetting,
+  setFrameGenerator,
   unpatchGame,
   updateAllGames,
   updateFromGithub,
@@ -234,7 +235,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   const [appid, setAppid] = useState<string>(() => rememberedAppId);
   const [status, setStatus] = useState<GameStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
-  const [busy, setBusy] = useState<"patch" | "unpatch" | null>(null);
+  const [busy, setBusy] = useState<"patch" | "unpatch" | "generator" | null>(null);
   const [dirChoice, setDirChoice] = useState<string>(AUTO_DIR);
   const [log, setLog] = useState<string>("");
   const [perf, setPerf] = useState<{
@@ -341,6 +342,21 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     }
   };
 
+  const changeGenerator = async (choice: string) => {
+    setBusy("generator");
+    setLog("");
+    setPerf(null);
+    try {
+      const r = await setFrameGenerator(appid, choice);
+      toast(r.message || r.status);
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setBusy(null);
+      await loadStatus(appid, true);
+    }
+  };
+
   const changeSetting = async (key: string, value: string) => {
     try {
       const r = await setGameSetting(appid, key, value);
@@ -442,6 +458,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   };
 
   const patched = Boolean(status?.patched);
+  const isXefg = status?.generator?.choice === "xefg";
+  const generatorLabel = isXefg ? "XeFG XMX Port · Build 10 beta" : status?.generator?.choice === "custom" ? status.generator.provider : "ANR FG";
   const proxyBase = (status?.proxy || "dxgi.dll").replace(/\.dll$/i, "");
   const anrLaunchLine = `WINEDLLOVERRIDES="${proxyBase}=n,b" %command%`;
   const launchHasOverride = launchOptions.includes(`${proxyBase}=n,b`);
@@ -472,7 +490,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     if (!status || status.status === "error") return status?.message || "—";
     if (!patched) return "Not patched";
     const how = status.mode === "addon" ? "add-on to OptiScaler" : `OptiScaler as ${status.proxy}`;
-    return `ANR FG ${status.game_version ?? "?"} (${how})`;
+    return `${generatorLabel} · ANR package ${status.game_version ?? "?"} (${how})`;
   })();
 
   return (
@@ -575,7 +593,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 disabled={busy !== null || status?.running}
                 onClick={doUnpatch}
               >
-                {busy === "unpatch" ? "Removing…" : "Remove ANR FG from this game"}
+                {busy === "unpatch" ? "Removing…" : "Remove frame generation from this game"}
               </ButtonItem>
             </PanelSectionRow>
           )}
@@ -596,11 +614,11 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 1. Start the game from Steam as usual.
                 <br />
                 2. Graphics / Video settings: turn on Frame Generation and pick <b>DLSS Frame Generation</b> (the
-                NVIDIA option, not FSR). ANR FG takes its place.
+                NVIDIA option, not FSR). {generatorLabel} takes its place.
                 <br />
                 3. Turn in-game V-Sync off; limit FPS from the Steam menu if needed.
                 <br />
-                4. Check it works: "Show the newest nr_fg log" below, or the FPS counter.
+                4. Check it works: "Show generator log" below, or the FPS counter.
               </div>
             </PanelSectionRow>
           )}
@@ -635,6 +653,30 @@ function GameSection({ info }: { info: AnrInfo | null }) {
 
           {patched && (
             <>
+              <PanelSectionRow>
+                <DropdownItem
+                  label="Frame generator"
+                  description={busy === "generator"
+                    ? "Preparing generator… First XeFG setup downloads about 75 MB."
+                    : "Close the game to switch. XeFG is a beta for DirectX 12 games; Proton compatibility is experimental."}
+                  disabled={busy !== null || status?.running}
+                  selectedOption={status?.generator?.choice || "anr"}
+                  rgOptions={[
+                    { data: "anr", label: "ANR FG" },
+                    ...(status?.generator?.available !== false ? [{ data: "xefg", label: "XeFG XMX Port · Build 10 (beta)" }] : []),
+                    ...(status?.generator?.choice === "custom" ? [{ data: "custom", label: status.generator.provider }] : []),
+                  ]}
+                  onChange={(o) => { if (o.data !== "custom") void changeGenerator(String(o.data)); }}
+                />
+              </PanelSectionRow>
+              {isXefg && (
+                <PanelSectionRow>
+                  <div style={small}>
+                    XeFG needs DirectX 12 and SDR or HDR10. Start with 2X. The ANR compute settings below are hidden;
+                    the frame multiplier and upscaler still apply.
+                  </div>
+                </PanelSectionRow>
+              )}
               {upscaler?.options && (
                 <>
                   <PanelSectionRow>
@@ -645,7 +687,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                           ? `FSR 4 ${upscaler.rdna4 ? "FP8" : "INT8"} model${
                               upscaler.fsr4_source ? `, AMD FidelityFX ${upscaler.fsr4_source.version}` : ""
                             }`
-                          : "OptiScaler's upscaler under ANR FG. The game's DLSS option drives it."
+                          : "OptiScaler's upscaler. The game's DLSS option drives it."
                       }
                       selectedOption={upscaler.choice || "package"}
                       rgOptions={upscaler.options.map((o) => ({
@@ -813,6 +855,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   Reset the profile
                 </ButtonItem>
               </PanelSectionRow>
+              {!isXefg && status?.generator?.choice !== "custom" && (<>
               <PanelSectionRow>
                 <SliderField
                   label="Generated frames"
@@ -889,9 +932,10 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   </div>
                 </PanelSectionRow>
               )}
+              </>)}
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={showLog}>
-                  Show the newest nr_fg log
+                  Show generator log
                 </ButtonItem>
               </PanelSectionRow>
               {log && (

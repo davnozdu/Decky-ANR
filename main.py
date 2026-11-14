@@ -23,6 +23,8 @@ from pathlib import Path
 
 import decky
 
+from xefg import GeneratorMixin, XEFG_LOG
+
 GITHUB_REPO = "apex-compute/ANR"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 PLUGIN_REPO = "davnozdu/Decky-ANR"
@@ -72,7 +74,12 @@ def _version_key(version: str) -> tuple:
     return tuple(int(n) for n in re.findall(r"\d+", version or ""))
 
 
-class Plugin:
+def _plugin_version_key(version: str) -> tuple:
+    base, _, prerelease = str(version).lstrip("vV").partition("-")
+    return (_version_key(base), not bool(prerelease), _version_key(prerelease))
+
+
+class Plugin(GeneratorMixin):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def _main(self):
@@ -116,7 +123,7 @@ class Plugin:
             asset = next((a for a in release.get("assets", []) if a.get("name") == PLUGIN_ASSET), None)
             info["plugin_current"] = self._plugin_version()
             info["plugin_latest"] = tag or None
-            info["plugin_update"] = bool(tag and asset) and _version_key(tag) > _version_key(self._plugin_version())
+            info["plugin_update"] = bool(tag and asset) and _plugin_version_key(tag) > _plugin_version_key(self._plugin_version())
             if asset:
                 info["plugin_url"] = asset.get("browser_download_url")
                 digest = str(asset.get("digest") or "")
@@ -170,7 +177,7 @@ class Plugin:
             info["plugin_current"] = self._plugin_version()
             if info.get("plugin_latest"):
                 info["plugin_update"] = bool(info.get("plugin_url")) and (
-                    _version_key(info["plugin_latest"]) > _version_key(self._plugin_version()))
+                    _plugin_version_key(info["plugin_latest"]) > _plugin_version_key(self._plugin_version()))
             return {"status": "success", **info}
         except Exception as exc:
             decky.logger.error(f"[ANR] check_updates: {exc}")
@@ -206,7 +213,8 @@ class Plugin:
 
     async def update_all_games(self) -> dict:
         try:
-            return await asyncio.to_thread(self._update_all)
+            async with self._generator_lock():
+                return await asyncio.to_thread(self._update_all)
         except Exception as exc:
             decky.logger.error(f"[ANR] update_all_games: {exc}")
             return {"status": "error", "message": str(exc)}
@@ -869,6 +877,7 @@ class Plugin:
             "game_version": game_version,
             "active_version": self._active_version(),
             "settings": settings,
+            "generator": self._generator_status(self._optiscaler_ini(target, desc), desc["proxy"]) if self._optiscaler_ini(target, desc) else None,
             "log_file": log_file,
             "candidates": candidates,
             "suggested_dir": str(target),
@@ -903,6 +912,8 @@ class Plugin:
         if not game:
             return {"status": "error", "message": "The game is not in the Steam library."}
         root = Path(game["install_path"]).resolve()
+        if self._load_state()["games"].get(appid, {}).get("generator") == "xefg":
+            self._ensure_xefg()  # Resolve network errors before the installer touches game files.
         if self._is_running(game):
             return {"status": "error", "message": "Close the game first."}
         state = self._load_state()
@@ -955,6 +966,8 @@ class Plugin:
         )
         previous = state["games"].get(appid, {})
         state["games"][appid] = {
+            "generator": previous.get("generator", "anr"),
+            **({"generator_original_output": previous["generator_original_output"]} if "generator_original_output" in previous else {}),
             "upscaler": previous.get("upscaler"),
             "render_quality": previous.get("render_quality"),
             "opti": previous.get("opti", {}),
@@ -973,6 +986,16 @@ class Plugin:
             self._reapply_upscaler(appid, target)
         except Exception as exc:
             decky.logger.error(f"[ANR] re-applying the upscaler for {appid}: {exc}")
+        if previous.get("generator"):
+            try:
+                self._apply_generator(appid, previous["generator"])
+            except Exception as exc:
+                # Never report a successful XeFG restore while ANR is active after reinstall.
+                state = self._load_state()
+                state["games"][appid]["generator"] = "anr"
+                self._save_state(state)
+                return {"status": "error", "launch_options": launch_options,
+                        "message": f"ANR installed, but the saved generator could not be restored: {exc}. Select XeFG again."}
         return {
             "status": "success",
             "launch_options": launch_options,
@@ -985,7 +1008,8 @@ class Plugin:
 
     async def patch_game(self, appid: str, current_launch_options: str = "", target_dir: str = "") -> dict:
         try:
-            return await asyncio.to_thread(self._patch, str(appid), current_launch_options or "", target_dir or "")
+            async with self._generator_lock():
+                return await asyncio.to_thread(self._patch, str(appid), current_launch_options or "", target_dir or "")
         except Exception as exc:
             decky.logger.error(f"[ANR] patch_game {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
@@ -1000,7 +1024,14 @@ class Plugin:
             package = self._package_dir(active, desc["mode"]) if active else package
         if not (package / "uninstall.sh").exists():
             return False, f"no {desc['mode']} uninstaller available"
-        return self._run_script(package / "uninstall.sh", target)
+        ini = self._optiscaler_ini(target, desc)
+        ok, output = self._run_script(package / "uninstall.sh", target)
+        if ok and ini and ini.exists():  # full installs remove OptiScaler; add-ons keep it
+            self._remove_xefg(ini)
+            entry = next((e for e in self._load_state()["games"].values() if e.get("target_dir") == str(target)), {})
+            if "generator_original_output" in entry:
+                self._set_ini_sections(ini, {("FrameGen", "FGOutput"): entry["generator_original_output"]})
+        return ok, output
 
     def _unpatch(self, appid: str, current_launch_options: str) -> dict:
         game = self._game(appid)
@@ -1033,7 +1064,8 @@ class Plugin:
 
     async def unpatch_game(self, appid: str, current_launch_options: str = "") -> dict:
         try:
-            return await asyncio.to_thread(self._unpatch, str(appid), current_launch_options or "")
+            async with self._generator_lock():
+                return await asyncio.to_thread(self._unpatch, str(appid), current_launch_options or "")
         except Exception as exc:
             decky.logger.error(f"[ANR] unpatch_game {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
@@ -1070,7 +1102,14 @@ class Plugin:
     async def read_game_log(self, appid: str, lines: int = 40) -> dict:
         try:
             status = await asyncio.to_thread(self._game_status, str(appid))
-            log_file = status.get("log_file")
+            if (status.get("generator") or {}).get("choice") == "xefg":
+                _, _, ini = self._target_and_ini(str(appid))
+                path = self._xefg_dest(ini) / "dlssg" / XEFG_LOG
+                log_file = str(path) if path.is_file() else None
+                if not log_file:
+                    return {"status": "success", "log": "", "message": "No XeFG log yet: start a DirectX 12 game with DLSS FG on."}
+            else:
+                log_file = status.get("log_file")
             if not log_file:
                 return {"status": "success", "log": "", "message": "No nr_fg log yet: start the game with FG on."}
             text = Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()

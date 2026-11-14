@@ -13,6 +13,8 @@ done
 rm -rf out && mkdir -p "out/Decky ANR/dist" "out/Decky ANR/bin"
 cp dist/index.js "out/Decky ANR/dist/"
 cp main.py plugin.json package.json LICENSE README.md "out/Decky ANR/"
+cp -R licenses py_modules "out/Decky ANR/"
+find "out/Decky ANR" -name __pycache__ -type d -prune -exec rm -rf {} +
 cp bin/anr-fg-"$version"-*.zip "out/Decky ANR/bin/"
 (cd out && zip -qr "Decky ANR.zip" "Decky ANR")
 echo "out/Decky ANR.zip"
