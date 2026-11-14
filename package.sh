@@ -12,7 +12,7 @@ done
 [ -e dist/index.js ] || npm run build
 rm -rf out && mkdir -p "out/Decky FrameGen Hub/dist" "out/Decky FrameGen Hub/bin"
 cp dist/index.js "out/Decky FrameGen Hub/dist/"
-cp main.py plugin.json package.json LICENSE README.md "out/Decky FrameGen Hub/"
+cp main.py plugin.json package.json LICENSE README.md README.ru.md "out/Decky FrameGen Hub/"
 cp -R licenses py_modules "out/Decky FrameGen Hub/"
 find "out/Decky FrameGen Hub" -name __pycache__ -type d -prune -exec rm -rf {} +
 cp bin/anr-fg-"$version"-*.zip "out/Decky FrameGen Hub/bin/"

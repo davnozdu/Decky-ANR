@@ -4,6 +4,26 @@
 **XeFG** (Intel XeSS frame generation via the XMX port) — with OptiScaler upscalers and per-game profiles.
 Updating from Decky ANR keeps your game profiles; the plugin then offers to remove the old one.
 
+**Инструкция на русском: [README.ru.md](README.ru.md).**
+
+## Quick start
+
+1. Download `Decky.FrameGen.Hub.zip` from [Releases](../../releases) → Decky → Settings → Developer → Install Plugin
+   from ZIP. Coming from Decky ANR: your game profiles are carried over; remove the old plugin when asked.
+2. **Lossless Scaling (best FPS, any game):** own Lossless Scaling in Steam, set it to the **lsfg-vk** beta branch
+   (Properties → Betas), press **Install lsfg-vk** in the plugin, then per game pick **Lossless Scaling**
+   (2X, flow scale 75%) and turn the game's own frame generation off.
+3. **ANR FG / XeFG (games with DLSS FG):** per game **Install ANR FG**, pick the **Frame generator**, then in the game
+   choose NVIDIA DLSS and turn **DLSS Frame Generation** on.
+4. For the most FPS: Upscaler **FSR 4** (cleaner) or **FSR 3.1** (faster), Render quality **Balanced/Performance**,
+   run **Benchmark** once and use its best compute path for ANR, keep 2X, and set an FPS limit for steady pacing.
+
+| Generator | Pick it for | Forza Horizon 6, ROG Xbox Ally X, 2X |
+|---|---|---|
+| Lossless Scaling (lsfg-vk) | most FPS, best responsiveness, any game | ~93 FPS shown |
+| XeFG | cleanest image (DX12, DLSS FG games) | ~73 |
+| ANR FG | Apex's neural FG, updated often | ~71 |
+
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin that installs and manages
 **ANR FG** ([Apex Neural Rendering](https://github.com/apex-compute/ANR) frame generation) in Proton games on
 Steam Deck, SteamOS and other Linux handhelds (Bazzite, CachyOS Handheld, …).
