@@ -371,6 +371,18 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
     def _home(self) -> Path:
         return Path(str(decky.HOME))
 
+    async def get_ui_language(self) -> dict:
+        # Steam's own setting takes precedence over the Linux locale. The frontend first tries SteamClient.
+        candidates = [self._home() / ".steam/registry.vdf", self._home() / ".local/share/Steam/config/config.vdf"]
+        for path in candidates:
+            try:
+                values = re.findall(r'"[Ll]anguage"\s+"([^"\n]+)"', path.read_text(encoding="utf-8", errors="replace"))
+                if values:
+                    return {"language": values[0]}
+            except OSError:
+                continue
+        return {"language": None}
+
     # ── Packages ──────────────────────────────────────────────────────────────
 
     def _package_dir(self, version: str, kind: str) -> Path:

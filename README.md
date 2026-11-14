@@ -38,6 +38,25 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## Steam language and Lossless Scaling imports (0.2.4)
+
+The UI follows **Steam's language** automatically: Russian Steam → Russian UI; English Steam → English UI.
+Other languages fall back to English. Steam's setting takes priority over the Linux/browser locale.
+Buttons, descriptions, option labels, plugin messages and notifications are translated; original game/driver
+logs and protocol values stay unchanged. Changing the language in Steam takes effect when Steam reloads;
+the plugin also listens for language/settings changes. No separate language preference is needed.
+
+In the Lossless Scaling section choose **Import Lossless Scaling library (DLL / ZIP)** (Russian:
+**Импорт библиотеки Lossless Scaling (DLL / ZIP)**). Select your original **lsfg-vk.dll** from the lsfg-vk beta
+branch of your own Lossless Scaling copy, or a ZIP containing exactly one such DLL. The import checks an
+x64 PE DLL and embedded Vulkan shaders, stores an unchanged copy under persistent plugin data, and updates
+lsfg-vk's library path without changing existing game profiles. Restart games using Lossless Scaling.
+`Lossless.dll` from the default branch is not accepted. Importing a newer compatible library works the same way.
+
+Without an import, the plugin still finds the original library in Steam automatically. The lsfg-vk Vulkan
+layer itself is installed separately with the existing Install lsfg-vk button. No Lossless Scaling DLL is
+included in this plugin release or uploaded anywhere by the plugin. The file remains your own local copy.
+
 ## FSR 4 Lite: bring your own AMD libraries (0.2.2)
 
 The plugin release contains **no AMD driver DLLs**. Download an official AMD Windows graphics driver yourself,
@@ -100,8 +119,8 @@ A third generator for **any** game, also without DLSS Frame Generation: [lsfg-vk
 the Linux layer for Lossless Scaling's frame generation.
 
 - You need your own **Lossless Scaling** (Steam app 993090) on the **lsfg-vk** beta branch (Properties → Betas): that
-  branch has `lsfg-vk.dll`; the default branch's `Lossless.dll` lacks what lsfg-vk 2 needs. The plugin uses it where
-  Steam installs it and never copies or uploads it.
+  branch has `lsfg-vk.dll`; the default branch's `Lossless.dll` lacks what lsfg-vk 2 needs. By default the plugin uses
+  the Steam copy in place. You may also import your own DLL/ZIP into persistent plugin data; nothing is uploaded.
 - **Install lsfg-vk** downloads the official build from builds.lsfg-vk.dev into `~/.local` (as its install guide
   does; lsfg-vk is CC BY-NC-ND 4.0 and is not bundled). Updates are offered when a new release is out.
 - Per game: **Frame generator → Lossless Scaling** (or the toggle for games without ANR), multiplier 2X–4X,

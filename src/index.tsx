@@ -9,7 +9,7 @@ import {
   SliderField,
   ToggleField,
 } from "@decky/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { MdAutoAwesome } from "react-icons/md";
 import {
   AnrInfo,
@@ -24,6 +24,7 @@ import {
   GameEntry,
   GameStatus,
   getAnrInfo,
+  getUiLanguage,
   getGameStatus,
   getPerformance,
   getUpscaler,
@@ -45,6 +46,7 @@ import {
   setGeneratorMode,
   getLsfgStatus,
   installLsfg,
+  importLsfgLibrary,
   refreshFsr4Dlls,
   getFsr4Library,
   importFsr4Libraries,
@@ -57,12 +59,13 @@ import {
   updateFromGithub,
   UpdateInfo,
 } from "./api";
+import { t, translateMessage, initializeLanguage, subscribeLanguage, getLanguage } from "./i18n";
 import { copyText, getLaunchOptions, setLaunchOptions } from "./steam";
 
 declare const SteamClient: any;
 
 const TITLE = "Decky FrameGen Hub";
-const toast = (body: string) => toaster.toast({ title: TITLE, body });
+const toast = (body: string) => toaster.toast({ title: TITLE, body: translateMessage(body) });
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const PATH_OPTIONS = ["auto", "coopmat", "packed", "dp4a", "portable", "portable-linalg", "portable-xmx"];
@@ -114,7 +117,7 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
     setBusy(label);
     try {
       const r = await fn();
-      toast(r.message || (r.status === "success" ? "Done." : "Failed."));
+      toast(r.message || (r.status === "success" ? t("Done.") : t("Failed.")));
     } catch (e) {
       toast(errorText(e));
     } finally {
@@ -137,11 +140,11 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         INSTALL_TYPE_UPDATE
       );
     } catch (e) {
-      toast(`Plugin update failed: ${errorText(e)}`);
+      toast(t("Plugin update failed: {0}", errorText(e)));
     }
   };
 
-  const checkedAt = updates?.checked_at ? new Date(updates.checked_at).toLocaleString() : null;
+  const checkedAt = updates?.checked_at ? new Date(updates.checked_at).toLocaleString(getLanguage() === "ru" ? "ru-RU" : "en-US") : null;
 
   return (
     <PanelSection title="ANR FG">
@@ -149,12 +152,12 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         <>
           <PanelSectionRow>
             <div style={banner("rgba(88,166,255,0.18)")}>
-              <b>{TITLE} {updates.plugin_latest}</b> is out (you have {updates.plugin_current}).
+              <b>{TITLE} {updates.plugin_latest}</b> {" "}{t("is out (you have")}{" "}{updates.plugin_current}).
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={updatePlugin}>
-              Update the plugin to {updates.plugin_latest}
+              {" "}{t("Update the plugin to")}{" "}{updates.plugin_latest}
             </ButtonItem>
           </PanelSectionRow>
         </>
@@ -163,9 +166,7 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
       {updates?.xefg_update && (
         <PanelSectionRow>
           <div style={banner("rgba(88,166,255,0.12)")}>
-            <b>XeFG {updates.xefg_latest}</b> is out (the plugin has {updates.xefg_current}). XeFG builds are checked
-            and pinned per plugin release: it arrives with the next plugin update.
-          </div>
+            <b>XeFG {updates.xefg_latest}</b> {" "}{t("is out (the plugin has")}{" "}{updates.xefg_current}{t("). XeFG builds are checked and pinned per plugin release: it arrives with the next plugin update.")}{" "}</div>
         </PanelSectionRow>
       )}
 
@@ -173,13 +174,12 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         <>
           <PanelSectionRow>
             <div style={banner("rgba(255,216,102,0.12)")}>
-              Proton has a newer FSR 4 DLL ({updates.fsr4_latest}) than {updates.fsr4_update_games.join(", ")}.
+              {" "}{t("Proton has a newer FSR 4 DLL (")}{updates.fsr4_latest}{t(") than")}{" "}{updates.fsr4_update_games.join(", ")}.
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("fsr4", refreshFsr4Dlls)}>
-              Update the FSR 4 DLL in these games
-            </ButtonItem>
+              {" "}{t("Update the FSR 4 DLL in these games")}{" "}</ButtonItem>
           </PanelSectionRow>
         </>
       )}
@@ -187,31 +187,29 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
       {updates?.anr_update && (
         <PanelSectionRow>
           <div style={banner("rgba(255,216,102,0.18)")}>
-            <b>New ANR FG {updates.anr_latest}</b> is out (you have {info?.version ?? "none"}). Download it below,
-            then update your games.
-          </div>
+            <b>{t("New ANR FG")}{" "}{updates.anr_latest}</b> {" "}{t("is out (you have")}{" "}{info?.version ?? t("not installed")}{t("). Download it below, then update your games.")}{" "}</div>
         </PanelSectionRow>
       )}
 
       <PanelSectionRow>
-        <Field label="Package" focusable>
-          {info === null ? "…" : info.installed ? info.version : <span style={{ color: "#ffd866" }}>not set up</span>}
+        <Field label={t("Package")} focusable>
+          {info === null ? "…" : info.installed ? info.version : <span style={{ color: "#ffd866" }}>{t("not set up")}</span>}
         </Field>
       </PanelSectionRow>
       {!info?.installed && (
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("setup", installBundled)}>
-            {busy === "setup" ? "Setting up…" : "Set up bundled ANR FG"}
+            {busy === "setup" ? t("Setting up…") : t("Set up bundled ANR FG")}
           </ButtonItem>
         </PanelSectionRow>
       )}
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("update", updateFromGithub)}>
           {busy === "update"
-            ? "Downloading…"
+            ? t("Downloading…")
             : updates?.anr_update
-            ? `Download ANR FG ${updates.anr_latest}`
-            : "Get the newest release"}
+            ? t("Download ANR FG {0}", updates.anr_latest)
+            : t("Get the newest release")}
         </ButtonItem>
       </PanelSectionRow>
 
@@ -219,13 +217,13 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         <>
           <PanelSectionRow>
             <div style={banner("rgba(255,216,102,0.12)")}>
-              {outdated.length === 1 ? "1 game uses" : `${outdated.length} games use`} an older ANR FG:{" "}
+              {outdated.length === 1 ? t("1 game uses") : t("{0} games use", outdated.length)} {" "}{t("an older ANR FG:")}{" "}
               {outdated.map((g) => `${g.name} (${g.version})`).join(", ")}
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("games", updateAllGames)}>
-              {busy === "games" ? "Updating games…" : `Update ${outdated.length === 1 ? "it" : "all"} to ${info?.version}`}
+              {busy === "games" ? t("Updating games…") : t("Update {0} to {1}", outdated.length === 1 ? t("it") : t("all"), info?.version)}
             </ButtonItem>
           </PanelSectionRow>
         </>
@@ -233,25 +231,42 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
 
       <PanelSectionRow>
         <Field label="Lossless Scaling (lsfg-vk)" focusable>
-          {lsfg === null ? "…" : lsfg.installed ? lsfg.version : "not installed"}
+          {lsfg === null ? "…" : lsfg.installed ? lsfg.version : t("not installed")}
         </Field>
       </PanelSectionRow>
       {lsfg && lsfg.installed && lsfg.dll_state !== "ok" && (
         <PanelSectionRow>
           <div style={{ ...small, color: "#ffd866" }}>
             {lsfg.dll_state === "wrong_branch"
-              ? "Lossless Scaling is on its default branch, which lacks what lsfg-vk 2 needs. In Steam: Lossless Scaling → Properties → Betas → lsfg-vk."
-              : "lsfg-vk needs your Lossless Scaling: install it from Steam and pick the beta branch \"lsfg-vk\" (Properties → Betas)."}
-            {" "}The plugin uses it where Steam installs it; nothing is copied.
-          </div>
+              ? t("Lossless Scaling is on its default branch, which lacks what lsfg-vk 2 needs. In Steam: Lossless Scaling → Properties → Betas → lsfg-vk.")
+              : t("lsfg-vk needs your Lossless Scaling: install it from Steam and pick the beta branch \"lsfg-vk\" (Properties → Betas).")}
+            {" "}{t("Or import your own lsfg-vk.dll or ZIP below.")}{" "}</div>
         </PanelSectionRow>
       )}
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy !== null}
+          description={lsfg?.dll_state === "ok"
+            ? lsfg.dll_source === "imported" ? t("Using your imported lsfg-vk.dll. Import a newer DLL or ZIP to update it.")
+              : t("Using lsfg-vk.dll from your Steam library. You can also import your own file.")
+            : t("Select lsfg-vk.dll from your own Lossless Scaling copy, or a ZIP containing it. Lossless.dll from the default branch is not compatible.")}
+          onClick={async () => {
+            let path: string;
+            try {
+              const file = await openFilePicker(FileSelectionType.FILE, lsfg?.home || "/home", true, true, undefined, ["dll", "zip"], false, false);
+              path = file.realpath || file.path;
+            } catch { return; }
+            await run("lsfg-import", () => importLsfgLibrary(path));
+            await loadLsfg();
+          }}>
+          {busy === "lsfg-import" ? t("Importing library…") : t("Import Lossless Scaling library (DLL / ZIP)")}
+        </ButtonItem>
+      </PanelSectionRow>
       {(!lsfg?.installed || updates?.lsfg_update) && (
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={busy !== null}
             onClick={async () => { await run("lsfg", installLsfg); await loadLsfg(); }}>
-            {busy === "lsfg" ? "Installing lsfg-vk…"
-              : lsfg?.installed ? `Update lsfg-vk to ${updates?.lsfg_latest}` : "Install lsfg-vk (frame generation for any game)"}
+            {busy === "lsfg" ? t("Installing lsfg-vk…")
+              : lsfg?.installed ? t("Update lsfg-vk to {0}", updates?.lsfg_latest) : t("Install lsfg-vk (frame generation for any game)")}
           </ButtonItem>
         </PanelSectionRow>
       )}
@@ -259,7 +274,7 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
       {info?.versions && info.versions.length > 1 && (
         <PanelSectionRow>
           <DropdownItem
-            label="Version for new patches"
+            label={t("Version for new patches")}
             selectedOption={info.version}
             rgOptions={[...info.versions].reverse().map((v) => ({ data: v, label: v }))}
             onChange={(o) => run("version", () => setActiveVersion(String(o.data)))}
@@ -273,19 +288,18 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
           setUpdates(r);
           if (r.status !== "success") return r;
           const parts = [
-            r.anr_update ? `ANR FG ${r.anr_latest} is out` : `ANR FG: ${r.anr_latest ?? "?"} is the newest`,
-            r.plugin_update ? `plugin ${r.plugin_latest} is out` : "plugin is up to date",
+            r.anr_update ? t("ANR FG {0} is out", r.anr_latest) : t("ANR FG: {0} is the newest", r.anr_latest ?? "?"),
+            r.plugin_update ? t("plugin {0} is out", r.plugin_latest) : t("plugin is up to date"),
           ];
           return { status: "success", message: parts.join("; ") + (r.errors?.length ? ` (${r.errors.join("; ")})` : "") };
         })}>
-          {busy === "check" ? "Checking…" : "Check for updates"}
+          {busy === "check" ? t("Checking…") : t("Check for updates")}
         </ButtonItem>
       </PanelSectionRow>
       {checkedAt && (
         <PanelSectionRow>
           <div style={small}>
-            Checked {checkedAt}; automatic check every 6 hours.
-            {updates?.errors?.length ? ` Last error: ${updates.errors[0]}` : ""}
+            {" "}{t("Checked")}{" "}{checkedAt}{t("; automatic check every 6 hours.")}{" "}{updates?.errors?.length ? t(" Last error: {0}", updates.errors[0]) : ""}
           </div>
         </PanelSectionRow>
       )}
@@ -303,23 +317,23 @@ function LsfgControls({ profile, busy, onChange }: {
   return (
     <>
       <PanelSectionRow>
-        <SliderField label="Lossless multiplier" description={`${m}X: ${m - 1} generated frame(s) per real frame.`}
+        <SliderField label={t("Lossless multiplier")} description={t("{0}X: {1} generated frame(s) per real frame.", m, m - 1)}
           value={m} min={2} max={4} step={1} showValue notchTicksVisible disabled={busy}
           onChange={(v: number) => onChange({ multiplier: v })} />
       </PanelSectionRow>
       <PanelSectionRow>
-        <SliderField label="Flow scale" description="Lower = faster, softer motion estimation (recommended 50–75% on handhelds)."
+        <SliderField label={t("Flow scale")} description={t("Lower = faster, softer motion estimation (recommended 50–75% on handhelds).")}
           value={flow} min={25} max={100} step={5} showValue valueSuffix="%" disabled={busy}
           onChange={(v: number) => onChange({ flow_scale: v / 100 })} />
       </PanelSectionRow>
       <PanelSectionRow>
-        <ToggleField label="Performance mode" description="Lighter model: cheaper on the GPU, a little less accurate."
+        <ToggleField label={t("Performance mode")} description={t("Lighter model: cheaper on the GPU, a little less accurate.")}
           checked={Boolean(profile?.performance_mode)} disabled={busy}
           onChange={(on: boolean) => onChange({ performance_mode: on })} />
       </PanelSectionRow>
       <PanelSectionRow>
         <div style={small}>
-          Turn the game's own frame generation off. Applies at the game's next start{profile?.active_in?.length ? ` (${profile.active_in.join(", ")})` : ""}.
+          {" "}{t("Turn the game's own frame generation off. Applies at the game's next start")}{profile?.active_in?.length ? ` (${profile.active_in.join(", ")})` : ""}.
         </div>
       </PanelSectionRow>
     </>
@@ -407,11 +421,11 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     try {
       const current = await getLaunchOptions(Number(appid));
       const r = await patchGame(appid, current, dirChoice === AUTO_DIR ? "" : dirChoice);
-      if (r.status !== "success") throw new Error(r.message || "Patch failed.");
+      if (r.status !== "success") throw new Error(r.message || t("Patch failed."));
       if (r.launch_options !== undefined && r.launch_options !== current) {
         setLaunchOptions(Number(appid), r.launch_options);
       }
-      toast(r.message || "Patched.");
+      toast(r.message || t("Patched."));
     } catch (e) {
       toast(errorText(e));
     } finally {
@@ -427,11 +441,11 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     try {
       const current = await getLaunchOptions(Number(appid));
       const r = await unpatchGame(appid, current);
-      if (r.status !== "success") throw new Error(r.message || "Unpatch failed.");
+      if (r.status !== "success") throw new Error(r.message || t("Unpatch failed."));
       if (r.launch_options !== undefined && r.launch_options !== current) {
         setLaunchOptions(Number(appid), r.launch_options);
       }
-      toast(r.message || "Unpatched.");
+      toast(r.message || t("Unpatched."));
     } catch (e) {
       toast(errorText(e));
     } finally {
@@ -484,8 +498,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     try {
       const r = await setOptiSetting(appid, key, value);
       ok = r.status === "success";
-      if (!ok) toast(r.message || "Failed.");
-      else if (r.message && (r.message.includes("Turned off") || status?.running)) toast(r.message);
+      if (!ok) toast(r.message || t("Failed."));
+      else if (r.message && (r.message.includes(t("Turned off")) || status?.running)) toast(r.message);
       if (ok) {
         // other settings may have been turned off with this one
         const o = await getOptiSettings(appid);
@@ -526,23 +540,23 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   const addFfx4Upgrade = async () => {
     const current = await getLaunchOptions(Number(appid));
     if (current.includes("PROTON_FFX4_UPGRADE")) {
-      toast("PROTON_FFX4_UPGRADE is already set: start the game once, then choose FSR 4.");
+      toast(t("PROTON_FFX4_UPGRADE is already set: start the game once, then choose FSR 4."));
       return;
     }
     const next = current.includes("%command%")
       ? `PROTON_FFX4_UPGRADE=1 ${current}`
       : `PROTON_FFX4_UPGRADE=1 %command% ${current}`.trim();
     setLaunchOptions(Number(appid), next);
-    toast("Added PROTON_FFX4_UPGRADE=1. Start the game once (proton-cachyos or GE-Proton), then choose FSR 4.");
+    toast(t("Added PROTON_FFX4_UPGRADE=1. Start the game once (proton-cachyos or GE-Proton), then choose FSR 4."));
     window.setTimeout(() => void loadStatus(appid, true), 500);
   };
 
   const showPerf = async () => {
     try {
       const r = await getPerformance(appid, 8);
-      if (r.status !== "success") throw new Error(r.message || "No data.");
+      if (r.status !== "success") throw new Error(r.message || t("No data."));
       setPerf({ sessions: r.sessions || [], summary: r.summary });
-      if (!r.sessions?.length) toast("No sessions with frame generation yet: play with DLSS FG on.");
+      if (!r.sessions?.length) toast(t("No sessions with frame generation yet: play with DLSS FG on."));
     } catch (e) {
       toast(errorText(e));
     }
@@ -561,9 +575,9 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   const isXefg = status?.generator?.choice === "xefg";
   const genChoice = status?.generator?.choice || "anr";
   const generatorLabel =
-    genChoice === "xefg" ? "XeFG XMX Port · Build 10 beta"
+    genChoice === "xefg" ? t("XeFG XMX Port · Build 10 beta")
     : genChoice === "lsfg" ? "Lossless Scaling (lsfg-vk)"
-    : genChoice === "off" ? "No frame generation"
+    : genChoice === "off" ? t("No frame generation")
     : genChoice === "custom" ? status?.generator?.provider || "custom"
     : "ANR FG";
   const proxyBase = (status?.proxy || "dxgi.dll").replace(/\.dll$/i, "");
@@ -571,7 +585,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
   const launchHasOverride = launchOptions.includes(`${proxyBase}=n,b`);
 
   const copyLaunch = async () => {
-    toast((await copyText(anrLaunchLine)) ? `Copied: ${anrLaunchLine}` : "Could not copy to the clipboard.");
+    toast((await copyText(anrLaunchLine)) ? t("Copied: {0}", anrLaunchLine) : t("Could not copy to the clipboard."));
   };
 
   const applyLaunch = async () => {
@@ -582,7 +596,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       ? `WINEDLLOVERRIDES="${proxyBase}=n,b" ${current}`.trim()
       : `${anrLaunchLine} ${current}`.trim();
     setLaunchOptions(Number(appid), next);
-    toast(`Launch options: ${next}`);
+    toast(t("Launch options: {0}", next));
     window.setTimeout(() => void loadStatus(appid, true), 500);
   };
   const outdated =
@@ -594,18 +608,18 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     if (!game) return "—";
     if (loadingStatus) return "…";
     if (!status || status.status === "error") return status?.message || "—";
-    if (!patched) return "Not patched";
-    const how = status.mode === "addon" ? "add-on to OptiScaler" : `OptiScaler as ${status.proxy}`;
-    return `${generatorLabel} · ANR package ${status.game_version ?? "?"} (${how})`;
+    if (!patched) return t("Not patched");
+    const how = status.mode === "addon" ? t("add-on to OptiScaler") : t("OptiScaler as {0}", status.proxy);
+    return t("{0} · ANR package {1} ({2})", generatorLabel, status.game_version ?? "?", how);
   })();
 
   return (
-    <PanelSection title="Game">
+    <PanelSection title={t("Game")}>
       <PanelSectionRow>
         <DropdownItem
           layout="below"
-          label="Steam game"
-          strDefaultLabel={loadingGames ? "Loading…" : "Choose a game"}
+          label={t("Steam game")}
+          strDefaultLabel={loadingGames ? t("Loading…") : t("Choose a game")}
           disabled={loadingGames || games.length === 0}
           selectedOption={appid}
           rgOptions={games.map((g) => ({ data: g.appid, label: g.patched ? `★ ${g.name}` : g.name }))}
@@ -619,7 +633,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
       {game && (
         <>
           <PanelSectionRow>
-            <Field label="Status" focusable>
+            <Field label={t("Status")} focusable>
               <span style={{ color: patched ? (outdated ? "#ffd866" : "#3fb950") : undefined, fontWeight: 600 }}>
                 {statusText}
               </span>
@@ -630,23 +644,23 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             <PanelSectionRow>
               <div style={{ ...small, color: status.proton.native ? "#ffd866" : undefined }}>
                 {status.proton.native
-                  ? "Native Linux build (no .exe): ANR FG needs the Windows version under Proton."
-                  : `Proton: ${status.proton.tool ?? "Steam default"}${
-                      status.proton.source === "default" ? " (default)" : ""
-                    }${status.proton.prefix ? `, prefix ${status.proton.prefix}` : ""}`}
+                  ? t("Native Linux build (no .exe): ANR FG needs the Windows version under Proton.")
+                  : `Proton: ${status.proton.tool ?? t("Steam default")}${
+                      status.proton.source === "default" ? t(" (default)") : ""
+                    }${status.proton.prefix ? t(", prefix {0}", status.proton.prefix) : ""}`}
               </div>
             </PanelSectionRow>
           )}
 
           {status?.running && (
             <PanelSectionRow>
-              <div style={{ ...small, color: "#ffd866" }}>The game is running: close it to patch or unpatch.</div>
+              <div style={{ ...small, color: "#ffd866" }}>{t("The game is running: close it to patch or unpatch.")}</div>
             </PanelSectionRow>
           )}
 
           {patched && status?.target_rel && (
             <PanelSectionRow>
-              <div style={small}>Folder: {status.target_rel}</div>
+              <div style={small}>{t("Folder:")}{" "}{status.target_rel}</div>
             </PanelSectionRow>
           )}
 
@@ -654,8 +668,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             <>
               <PanelSectionRow>
                 <ToggleField
-                  label="Lossless Scaling frame generation"
-                  description="lsfg-vk works in any game, also without DLSS Frame Generation. Needs your Lossless Scaling (Steam, branch lsfg-vk)."
+                  label={t("Lossless Scaling frame generation")}
+                  description={t("lsfg-vk works in any game, also without DLSS Frame Generation. Needs your Lossless Scaling (Steam, branch lsfg-vk).")}
                   checked={Boolean(status?.lsfg)}
                   disabled={busy !== null || Boolean(status?.running)}
                   onChange={(on: boolean) => void changeGenerator(on ? "lsfg" : "off")}
@@ -678,10 +692,10 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             <PanelSectionRow>
               <DropdownItem
                 layout="below"
-                label="Game .exe"
+                label={t("Game .exe")}
                 selectedOption={dirChoice}
                 rgOptions={[
-                  { data: AUTO_DIR, label: `Auto: ${status.candidates[0].exe}` },
+                  { data: AUTO_DIR, label: t("Auto: {0}", status.candidates[0].exe) },
                   ...status.candidates.map((c) => ({ data: c.dir, label: c.exe })),
                 ]}
                 onChange={(o) => setDirChoice(String(o.data))}
@@ -696,12 +710,12 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               onClick={doPatch}
             >
               {busy === "patch"
-                ? "Installing…"
+                ? t("Installing…")
                 : patched
                 ? outdated
-                  ? `Update to ${status?.active_version}`
-                  : "Reinstall ANR FG"
-                : "Install ANR FG"}
+                  ? t("Update to {0}", status?.active_version)
+                  : t("Reinstall ANR FG")
+                : t("Install ANR FG")}
             </ButtonItem>
           </PanelSectionRow>
 
@@ -711,13 +725,13 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 layout="below"
                 description={
                   status?.running
-                    ? "Close the game to remove it."
-                    : "Restores the game's files and launch options; the game's profile is deleted."
+                    ? t("Close the game to remove it.")
+                    : t("Restores the game's files and launch options; the game's profile is deleted.")
                 }
                 disabled={busy !== null || status?.running}
                 onClick={doUnpatch}
               >
-                {busy === "unpatch" ? "Removing…" : "Remove frame generation from this game"}
+                {busy === "unpatch" ? t("Removing…") : t("Remove frame generation from this game")}
               </ButtonItem>
             </PanelSectionRow>
           )}
@@ -733,42 +747,35 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   background: "rgba(63,185,80,0.12)",
                 }}
               >
-                <b>Next steps</b>
+                <b>{t("Next steps")}</b>
                 <br />
-                1. Start the game from Steam as usual.
-                <br />
-                2. Graphics / Video settings: turn on Frame Generation and pick <b>DLSS Frame Generation</b> (the
-                NVIDIA option, not FSR). {generatorLabel} takes its place.
-                <br />
-                3. Turn in-game V-Sync off; limit FPS from the Steam menu if needed.
-                <br />
-                4. Check it works: "Show generator log" below, or the FPS counter.
-              </div>
+                {" "}{t("1. Start the game from Steam as usual.")}{" "}<br />
+                {" "}{t("2. Graphics / Video settings: turn on Frame Generation and pick")}{" "}<b>DLSS Frame Generation</b> {" "}{t("(the NVIDIA option, not FSR).")}{" "}{generatorLabel} {" "}{t("takes its place.")}{" "}<br />
+                {" "}{t("3. Turn in-game V-Sync off; limit FPS from the Steam menu if needed.")}{" "}<br />
+                {" "}{t("4. Check it works: \"Show generator log\" below, or the FPS counter.")}{" "}</div>
             </PanelSectionRow>
           )}
 
           {patched && status?.mode === "full" && (
             <>
               <PanelSectionRow>
-                <Field label="Launch options" focusable bottomSeparator="none">
+                <Field label={t("Launch options")} focusable bottomSeparator="none">
                   <span style={{ color: launchHasOverride ? "#3fb950" : "#ffd866" }}>
-                    {launchHasOverride ? "set" : "missing"}
+                    {launchHasOverride ? t("Set") : t("Missing")}
                   </span>
                 </Field>
               </PanelSectionRow>
               <PanelSectionRow>
-                <div style={small}>{launchOptions || "(empty)"}</div>
+                <div style={small}>{launchOptions || t("(empty)")}</div>
               </PanelSectionRow>
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={copyLaunch}>
-                  Copy launch options
-                </ButtonItem>
+                  {" "}{t("Copy launch options")}{" "}</ButtonItem>
               </PanelSectionRow>
               {!launchHasOverride && (
                 <PanelSectionRow>
                   <ButtonItem layout="below" onClick={applyLaunch}>
-                    Apply launch options to the game
-                  </ButtonItem>
+                    {" "}{t("Apply launch options to the game")}{" "}</ButtonItem>
                 </PanelSectionRow>
               )}
             </>
@@ -779,15 +786,15 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             <>
               <PanelSectionRow>
                 <DropdownItem
-                  label="Frame generator"
+                  label={t("Frame generator")}
                   description={busy === "generator"
-                    ? "Preparing generator… First XeFG setup downloads about 75 MB."
-                    : "Close the game to switch. XeFG is a beta for DirectX 12 games; Proton compatibility is experimental."}
+                    ? t("Preparing generator… First XeFG setup downloads about 75 MB.")
+                    : t("Close the game to switch. XeFG is a beta for DirectX 12 games; Proton compatibility is experimental.")}
                   disabled={busy !== null || status?.running}
                   selectedOption={status?.generator?.choice || "anr"}
                   rgOptions={[
                     { data: "anr", label: "ANR FG" },
-                    ...(status?.generator?.available !== false ? [{ data: "xefg", label: "XeFG XMX Port · Build 10 (beta)" }] : []),
+                    ...(status?.generator?.available !== false ? [{ data: "xefg", label: t("XeFG XMX Port · Build 10 (beta)") }] : []),
                     { data: "lsfg", label: "Lossless Scaling (lsfg-vk)" },
                     { data: "off", label: "Off" },
                     ...(status?.generator?.choice === "custom" ? [{ data: "custom", label: status.generator.provider }] : []),
@@ -798,9 +805,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               {isXefg && (
                 <PanelSectionRow>
                   <div style={small}>
-                    XeFG needs DirectX 12 and SDR or HDR10. Start with 2X. The ANR compute settings below are hidden;
-                    the frame multiplier and upscaler still apply.
-                  </div>
+                    {" "}{t("XeFG needs DirectX 12 and SDR or HDR10. Start with 2X. The ANR compute settings below are hidden; the frame multiplier and upscaler still apply.")}{" "}</div>
                 </PanelSectionRow>
               )}
               {genChoice === "lsfg" && (
@@ -811,27 +816,25 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 <>
                   <PanelSectionRow>
                     <DropdownItem
-                      label="Upscaler"
+                      label={t("Upscaler")}
                       description={
                         upscaler.choice === "fsr4lite"
-                          ? "INT8 Lite from your imported libraries. Enable the watermark to verify FSR4L-i8 after launch."
+                          ? t("INT8 Lite from your imported libraries. Enable the watermark to verify FSR4L-i8 after launch.")
                           : upscaler.choice === "fsr4"
-                          ? `FSR 4 ${upscaler.rdna4 ? "FP8" : "INT8"} model${
-                              upscaler.fsr4_source
-                                ? `, AMD FidelityFX ${upscaler.fsr4_source.version} from ${upscaler.fsr4_source.source || "Proton"}`
-                                : ""
-                            }${upscaler.gpu_family === "rdna2" ? ". Slow on RDNA 2 (Steam Deck): FSR 3.1 is usually better." : ""}`
+                          ? t("FSR 4 {0} model{1}{2}", upscaler.rdna4 ? "FP8" : "INT8", upscaler.fsr4_source
+                                ? t(", AMD FidelityFX {0} from {1}", upscaler.fsr4_source.version, upscaler.fsr4_source.source || "Proton")
+                                : "", upscaler.gpu_family === "rdna2" ? t(". Slow on RDNA 2 (Steam Deck): FSR 3.1 is usually better.") : "")
                           : upscaler.gpu_family === "rdna2"
-                          ? "OptiScaler's upscaler. On RDNA 2 (Steam Deck) FSR 3.1 is the fast choice."
-                          : "OptiScaler's upscaler. The game's DLSS option drives it."
+                          ? t("OptiScaler's upscaler. On RDNA 2 (Steam Deck) FSR 3.1 is the fast choice.")
+                          : t("OptiScaler's upscaler. The game's DLSS option drives it.")
                       }
                       selectedOption={upscaler.choice || "package"}
                       rgOptions={upscaler.options.map((o) => ({
                         data: o.value,
                         label:
-                          o.value === "fsr4lite" && !upscaler.fsr4_lite_available ? `${o.label} (import ZIP first)`
-                          : o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs Proton Experimental)`
-                          : o.value === "fsr4" && upscaler.gpu_family === "rdna2" ? `${o.label} · slow on this GPU`
+                          o.value === "fsr4lite" && !upscaler.fsr4_lite_available ? t("{0} (import ZIP first)", o.label)
+                          : o.value === "fsr4" && !upscaler.fsr4_source ? t("{0} (needs Proton Experimental)", o.label)
+                          : o.value === "fsr4" && upscaler.gpu_family === "rdna2" ? t("{0} · slow on this GPU", o.label)
                           : o.label,
                       }))}
                       onChange={(o) => void changeUpscaler(String(o.data), Boolean(upscaler.watermark))}
@@ -840,13 +843,13 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   {upscaler.render_options && (
                     <PanelSectionRow>
                       <DropdownItem
-                        label="Render quality"
+                        label={t("Render quality")}
                         description={(() => {
                           const cur = upscaler.render_options.find((o) => o.value === (upscaler.render_quality || "game"));
                           const out = upscaler.output || [1920, 1080];
                           return cur?.ratio
-                            ? `Renders at ${renderSize(cur.ratio)}, upscaled to ${out[0]}×${out[1]}. Lower = faster.`
-                            : "Follows the DLSS mode chosen in the game (keep NVIDIA DLSS selected there).";
+                            ? t("Renders at {0}, upscaled to {1}×{2}. Lower = faster.", renderSize(cur.ratio), out[0], out[1])
+                            : t("Follows the DLSS mode chosen in the game (keep NVIDIA DLSS selected there).");
                         })()}
                         selectedOption={upscaler.render_quality || "game"}
                         rgOptions={upscaler.render_options.map((o) => ({
@@ -862,30 +865,28 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       {!upscaler.proton_experimental && (
                         <PanelSectionRow>
                           <ButtonItem layout="below"
-                            description="Valve's Proton Experimental carries AMD's FSR 4 library; the plugin uses it from there."
+                            description={t("Valve's Proton Experimental carries AMD's FSR 4 library; the plugin uses it from there.")}
                             onClick={() => {
                               try {
                                 SteamClient.URL.ExecuteSteamURL("steam://install/1493710");
                               } catch {
-                                toast("Install Proton Experimental from the Steam library (Tools).");
+                                toast(t("Install Proton Experimental from the Steam library (Tools)."));
                               }
                             }}>
-                            Install Proton Experimental (for FSR 4)
-                          </ButtonItem>
+                            {" "}{t("Install Proton Experimental (for FSR 4)")}{" "}</ButtonItem>
                         </PanelSectionRow>
                       )}
                       <PanelSectionRow>
                         <ButtonItem layout="below" onClick={addFfx4Upgrade}>
-                          Or: FSR 4 through proton-cachyos / GE-Proton (PROTON_FFX4_UPGRADE)
-                        </ButtonItem>
+                          {" "}{t("Or: FSR 4 through proton-cachyos / GE-Proton (PROTON_FFX4_UPGRADE)")}{" "}</ButtonItem>
                       </PanelSectionRow>
                     </>
                   )}
                   {["fsr4", "fsr4lite"].includes(upscaler.choice || "") && (
                     <PanelSectionRow>
                       <ToggleField
-                        label="Show the FSR watermark"
-                        description="Shows which FSR runs, to check FSR 4 is active."
+                        label={t("Show the FSR watermark")}
+                        description={t("Shows which FSR runs, to check FSR 4 is active.")}
                         checked={Boolean(upscaler.watermark)}
                         onChange={(on: boolean) => void changeUpscaler(upscaler.choice as string, on)}
                       />
@@ -895,16 +896,15 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               )}
               <PanelSectionRow>
                 <div style={{ ...small, opacity: 1, fontWeight: 700, marginTop: "6px" }}>
-                  Game profile · tuning (OptiScaler). Close the game, change, start it again.
-                </div>
+                  {" "}{t("Game profile · tuning (OptiScaler). Close the game, change, start it again.")}{" "}</div>
               </PanelSectionRow>
               <PanelSectionRow>
                 <DropdownItem
-                  label="Frame generation multiplier"
-                  description="Overrides what the game asks for (many games only offer 2X on non-RTX 50 GPUs)."
+                  label={t("Frame generation multiplier")}
+                  description={t("Overrides what the game asks for (many games only offer 2X on non-RTX 50 GPUs).")}
                   selectedOption={opti.fg_multiplier || "auto"}
                   rgOptions={[
-                    { data: "auto", label: "As the game asks" },
+                    { data: "auto", label: t("As the game asks") },
                     { data: "1", label: "2X" },
                     { data: "2", label: "3X" },
                     { data: "3", label: "4X" },
@@ -916,8 +916,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               </PanelSectionRow>
               <PanelSectionRow>
                 <ToggleField
-                  label="Dynamic multiplier (DMFG) · experimental"
-                  description="Picks the lowest multiplier that reaches the target FPS (Streamline 2.11 games). Caused a GPU hang in Forza Horizon 6 on a Radeon 890M while switching multipliers: prefer a fixed multiplier."
+                  label={t("Dynamic multiplier (DMFG) · experimental")}
+                  description={t("Picks the lowest multiplier that reaches the target FPS (Streamline 2.11 games). Caused a GPU hang in Forza Horizon 6 on a Radeon 890M while switching multipliers: prefer a fixed multiplier.")}
                   checked={opti.dynamic_mfg === "true"}
                   onChange={(on: boolean) => void changeOpti("dynamic_mfg", on ? "true" : "auto")}
                 />
@@ -925,8 +925,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               {opti.dynamic_mfg === "true" && (
                 <PanelSectionRow>
                   <SliderField
-                    label="DMFG target FPS"
-                    description="0 = the display's refresh rate."
+                    label={t("DMFG target FPS")}
+                    description={t("0 = the display's refresh rate.")}
                     value={Number(opti.dmfg_target && opti.dmfg_target !== "auto" ? opti.dmfg_target : 0)}
                     min={0}
                     max={120}
@@ -939,13 +939,13 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               )}
               {opti.dynamic_mfg === "true" ? (
                 <PanelSectionRow>
-                  <div style={small}>FPS limit and a fixed multiplier are off while Dynamic MFG holds its own target.</div>
+                  <div style={small}>{t("FPS limit and a fixed multiplier are off while Dynamic MFG holds its own target.")}</div>
                 </PanelSectionRow>
               ) : (
               <PanelSectionRow>
                 <SliderField
-                  label="FPS limit"
-                  description="0 = off. FPS on screen, in steps of 10. Steadier pacing and less battery drain."
+                  label={t("FPS limit")}
+                  description={t("0 = off. FPS on screen, in steps of 10. Steadier pacing and less battery drain.")}
                   value={Number(opti.fps_limit && opti.fps_limit !== "auto" ? opti.fps_limit : 0)}
                   min={0}
                   max={120}
@@ -958,8 +958,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               )}
               <PanelSectionRow>
                 <ToggleField
-                  label="Sharpening (RCAS)"
-                  description="Override the sharpening strength; useful with Performance render quality."
+                  label={t("Sharpening (RCAS)")}
+                  description={t("Override the sharpening strength; useful with Performance render quality.")}
                   checked={opti.sharpness_override === "true"}
                   onChange={(on: boolean) => void changeOpti("sharpness_override", on ? "true" : "auto")}
                 />
@@ -967,7 +967,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               {opti.sharpness_override === "true" && (
                 <PanelSectionRow>
                   <SliderField
-                    label="Sharpening strength"
+                    label={t("Sharpening strength")}
                     value={Math.round(Number(opti.sharpness && opti.sharpness !== "auto" ? opti.sharpness : 0.3) * 10)}
                     min={0}
                     max={13}
@@ -980,7 +980,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               )}
               <PanelSectionRow>
                 <ToggleField
-                  label="OptiScaler FPS counter"
+                  label={t("OptiScaler FPS counter")}
                   checked={opti.show_fps === "true"}
                   onChange={(on: boolean) => void changeOpti("show_fps", on ? "true" : "auto")}
                 />
@@ -989,8 +989,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                 <>
                   <PanelSectionRow>
                     <DropdownItem
-                      label="Copy the profile from"
-                      strDefaultLabel="Choose a game"
+                      label={t("Copy the profile from")}
+                      strDefaultLabel={t("Choose a game")}
                       selectedOption={copyFrom}
                       rgOptions={games
                         .filter((g) => g.patched && g.appid !== appid)
@@ -1001,22 +1001,20 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   {copyFrom && (
                     <PanelSectionRow>
                       <ButtonItem layout="below" onClick={() => profileAction(() => copyProfile(appid, copyFrom))}>
-                        Copy the profile
-                      </ButtonItem>
+                        {" "}{t("Copy the profile")}{" "}</ButtonItem>
                     </PanelSectionRow>
                   )}
                 </>
               )}
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={() => profileAction(() => resetProfile(appid))}>
-                  Reset the profile
-                </ButtonItem>
+                  {" "}{t("Reset the profile")}{" "}</ButtonItem>
               </PanelSectionRow>
               {genChoice === "anr" && (<>
               <PanelSectionRow>
                 <SliderField
-                  label="Generated frames"
-                  description={`Up to ${maxGenerated + 1}X. Restart the game after a change.`}
+                  label={t("Generated frames")}
+                  description={t("Up to {0}X. Restart the game after a change.", maxGenerated + 1)}
                   value={maxGenerated}
                   min={1}
                   max={5}
@@ -1028,45 +1026,43 @@ function GameSection({ info }: { info: AnrInfo | null }) {
               </PanelSectionRow>
               <PanelSectionRow>
                 <DropdownItem
-                  label="Compute path"
+                  label={t("Compute path")}
                   selectedOption={settings.path || "auto"}
-                  rgOptions={PATH_OPTIONS.map((p) => ({ data: p, label: p }))}
+                  rgOptions={PATH_OPTIONS.map((p) => ({ data: p, label: p === "auto" ? t("Automatic") : p }))}
                   onChange={(o) => void changeSetting("path", String(o.data))}
                 />
               </PanelSectionRow>
               <PanelSectionRow>
                 <ToggleField
-                  label="Scene cut detection"
-                  description="No interpolation across camera cuts."
+                  label={t("Scene cut detection")}
+                  description={t("No interpolation across camera cuts.")}
                   checked={settings.scene_cut !== "0"}
                   onChange={(on: boolean) => void changeSetting("scene_cut", on ? "1" : "0")}
                 />
               </PanelSectionRow>
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={showPerf}>
-                  Performance by compute path
-                </ButtonItem>
+                  {" "}{t("Performance by compute path")}{" "}</ButtonItem>
               </PanelSectionRow>
               {perf && perf.sessions.length > 0 && (
                 <PanelSectionRow>
                   <div style={{ ...small, opacity: 1 }}>
                     {perf.summary && perf.summary.length > 0 && (
                       <div style={{ marginBottom: "6px" }}>
-                        <b>Best:</b> {perf.summary[0].path} ({perf.summary[0].total_ms} ms GPU per real frame)
-                        {perf.summary.length > 1 &&
+                        <b>{t("Best:")}</b> {perf.summary[0].path} ({perf.summary[0].total_ms} {" "}{t("ms GPU per real frame)")}{" "}{perf.summary.length > 1 &&
                           perf.summary
                             .slice(1)
-                            .map((x) => ` · ${x.path} ${x.total_ms} ms`)
+                            .map((x) => t(" · {0} {1} ms", x.path, x.total_ms))
                             .join("")}
                       </div>
                     )}
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
                         <tr style={{ textAlign: "left", opacity: 0.7 }}>
-                          <th>Path</th>
-                          <th>GPU ms</th>
+                          <th>{t("Path")}</th>
+                          <th>{t("GPU ms")}</th>
                           <th>FPS</th>
-                          <th>Err</th>
+                          <th>{t("Err")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1083,17 +1079,14 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       </tbody>
                     </table>
                     <div style={{ marginTop: "6px", opacity: 0.7 }}>
-                      GPU ms: ANR's GPU time per real frame (pair + generated frames), lower is better. Newest
-                      session first. Compare paths in the same scene for a fair result.
-                    </div>
+                      {" "}{t("GPU ms: ANR's GPU time per real frame (pair + generated frames), lower is better. Newest session first. Compare paths in the same scene for a fair result.")}{" "}</div>
                   </div>
                 </PanelSectionRow>
               )}
               </>)}
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={showLog}>
-                  Show generator log
-                </ButtonItem>
+                  {" "}{t("Show generator log")}{" "}</ButtonItem>
               </PanelSectionRow>
               {log && (
                 <PanelSectionRow>
@@ -1105,8 +1098,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
 
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={loadingStatus} onClick={() => void loadStatus(appid)}>
-              Refresh
-            </ButtonItem>
+              {" "}{t("Refresh")}{" "}</ButtonItem>
           </PanelSectionRow>
         </>
       )}
@@ -1145,8 +1137,8 @@ function BenchmarkSection() {
     const was = lastStage.current;
     lastStage.current = stage;
     if (!was || !RUNNING_STAGES.includes(was)) return;
-    if (stage === "done") toast(bench?.live?.message || "Benchmark finished.");
-    if (stage === "error") toast(`Benchmark: ${bench?.live?.message}`);
+    if (stage === "done") toast(bench?.live?.message || t("Benchmark finished."));
+    if (stage === "error") toast(t("Benchmark: {0}", bench?.live?.message));
   }, [stage]);
 
   const act = async (fn: () => Promise<{ status: string; message?: string }>) => {
@@ -1175,13 +1167,10 @@ function BenchmarkSection() {
     : [];
 
   return (
-    <PanelSection title="Benchmark">
+    <PanelSection title={t("Benchmark")}>
       <PanelSectionRow>
         <div style={small}>
-          Runs ANR's official test kit on this GPU: every compute path at 1080p, 1440p and 4K, timed and checked against
-          reference frames, next to AMD FSR 3.1 frame generation. Downloads ~570 MB once; takes 5–15 min. Close games
-          first and plug the device in.
-        </div>
+          {" "}{t("Runs ANR's official test kit on this GPU: every compute path at 1080p, 1440p and 4K, timed and checked against reference frames, next to AMD FSR 3.1 frame generation. Downloads ~570 MB once; takes 5–15 min. Close games first and plug the device in.")}{" "}</div>
       </PanelSectionRow>
 
       {running ? (
@@ -1196,21 +1185,19 @@ function BenchmarkSection() {
               )}
               {live.stage === "download" && live.total ? (
                 <div style={{ marginTop: "4px" }}>
-                  {Math.round((live.progress || 0) / 2 ** 20)} / {Math.round(live.total / 2 ** 20)} MB
-                </div>
+                  {Math.round((live.progress || 0) / 2 ** 20)} / {Math.round(live.total / 2 ** 20)} {" "}{t("MB")}{" "}</div>
               ) : null}
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy} onClick={() => act(cancelBenchmark)}>
-              Stop the benchmark
-            </ButtonItem>
+              {" "}{t("Stop the benchmark")}{" "}</ButtonItem>
           </PanelSectionRow>
         </>
       ) : (
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={busy} onClick={() => act(startBenchmark)}>
-            {result ? "Run the benchmark again" : "Run the benchmark"}
+            {result ? t("Run the benchmark again") : t("Run the benchmark")}
           </ButtonItem>
         </PanelSectionRow>
       )}
@@ -1226,20 +1213,19 @@ function BenchmarkSection() {
           <PanelSectionRow>
             <div style={{ ...small, opacity: 1 }}>
               <div style={{ marginBottom: "6px" }}>
-                {result.gpu} · ANR {result.version} · {result.runs} runs, {result.failed ?? 0} failed
-              </div>
+                {result.gpu} · ANR {result.version} · {result.runs} {" "}{t("runs,")}{" "}{result.failed ?? 0} {" "}{t("failed")}{" "}</div>
               <div style={{ marginBottom: "6px" }}>
-                <b>Best: {result.best_path}</b>
+                <b>{t("Best:")}{" "}{result.best_path}</b>
                 {result.auto_path && result.auto_path !== result.best_path
-                  ? ` (auto picks ${result.auto_path})`
+                  ? t(" (auto picks {0})", result.auto_path)
                   : result.auto_path
-                  ? " (= auto)"
+                  ? t(" (= auto)")
                   : ""}
               </div>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ textAlign: "left", opacity: 0.7 }}>
-                    <th>2X, ms · dB</th>
+                    <th>{t("2X, ms · dB")}</th>
                     {sizes.map((s) => (
                       <th key={s}>{s}</th>
                     ))}
@@ -1271,8 +1257,7 @@ function BenchmarkSection() {
                 </tbody>
               </table>
               <div style={{ marginTop: "6px", opacity: 0.7 }}>
-                ms: GPU time per real frame at 2X, lower is better. dB: match to reference frames, higher is better.
-              </div>
+                {" "}{t("ms: GPU time per real frame at 2X, lower is better. dB: match to reference frames, higher is better.")}{" "}</div>
             </div>
           </PanelSectionRow>
           {result.best_path && (
@@ -1283,16 +1268,15 @@ function BenchmarkSection() {
                 onClick={() => act(() => applyPathAll(result.best_path as string))}
               >
                 {bench?.preferred_path === result.best_path
-                  ? `${result.best_path} is applied (re-apply to all games)`
-                  : `Use ${result.best_path} in all games`}
+                  ? t("{0} is applied (re-apply to all games)", result.best_path)
+                  : t("Use {0} in all games", result.best_path)}
               </ButtonItem>
             </PanelSectionRow>
           )}
           {bench?.preferred_path && (
             <PanelSectionRow>
               <ButtonItem layout="below" disabled={busy || running} onClick={() => act(() => applyPathAll("auto"))}>
-                Back to auto in all games
-              </ButtonItem>
+                {" "}{t("Back to auto in all games")}{" "}</ButtonItem>
             </PanelSectionRow>
           )}
         </>
@@ -1301,7 +1285,7 @@ function BenchmarkSection() {
       {!running && (bench?.kit_mb || 0) > 0 && (
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={busy} onClick={() => act(deleteBenchmarkKit)}>
-            Delete the test kit ({bench?.kit_mb} MB)
+            {" "}{t("Delete the test kit (")}{bench?.kit_mb}{" "}{t("MB)")}
           </ButtonItem>
         </PanelSectionRow>
       )}
@@ -1313,18 +1297,13 @@ function BenchmarkSection() {
 
 function HelpSection() {
   return (
-    <PanelSection title="How to use">
+    <PanelSection title={t("How to use")}>
       <PanelSectionRow>
         <div style={small}>
-          1. Choose a game above and press Install ANR FG: the plugin sets the launch option WINEDLLOVERRIDES.
-          <br />
-          2. Start the game. In its graphics settings turn on DLSS Frame Generation (the NVIDIA option, not FSR):
-          ANR FG takes its place. Turn in-game V-Sync off.
-          <br />
-          3. Works in D3D12 / Vulkan games that offer DLSS Frame Generation. OptiScaler's menu: Insert key.
-          <br />
-          Games patched by Decky Framegen must be unpatched there first.
-        </div>
+          {" "}{t("1. Choose a game above and press Install ANR FG: the plugin sets the launch option WINEDLLOVERRIDES.")}{" "}<br />
+          {" "}{t("2. Start the game. In its graphics settings turn on DLSS Frame Generation (the NVIDIA option, not FSR): ANR FG takes its place. Turn in-game V-Sync off.")}{" "}<br />
+          {" "}{t("3. Works in D3D12 / Vulkan games that offer DLSS Frame Generation. OptiScaler's menu: Insert key.")}{" "}<br />
+          {" "}{t("Games patched by Decky Framegen must be unpatched there first.")}{" "}</div>
       </PanelSectionRow>
     </PanelSection>
   );
@@ -1347,7 +1326,7 @@ function LegacyBanner() {
     setBusy(true);
     try {
       await DeckyBackend.call("utilities/uninstall_plugin", legacy.name);
-      toast(`${legacy.name} removed. Your game profiles were carried over.`);
+      toast(t("{0} removed. Your game profiles were carried over.", legacy.name));
     } catch (e) {
       toast(errorText(e));
     } finally {
@@ -1356,16 +1335,14 @@ function LegacyBanner() {
     }
   };
   return (
-    <PanelSection title="Renamed">
+    <PanelSection title={t("Renamed")}>
       <PanelSectionRow>
         <div style={banner("rgba(88,166,255,0.18)")}>
-          <b>{legacy.name}</b> is now <b>{TITLE}</b>. Your game profiles, ANR packages and XeFG files were carried
-          over. Remove the old plugin so the two do not both manage the same games.
-        </div>
+          <b>{legacy.name}</b> {" "}{t("is now")}{" "}<b>{TITLE}</b>{t(". Your game profiles, ANR packages and XeFG files were carried over. Remove the old plugin so the two do not both manage the same games.")}{" "}</div>
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy} onClick={remove}>
-          {busy ? "Removing…" : `Remove the old ${legacy.name} plugin`}
+          {busy ? t("Removing…") : t("Remove the old {0} plugin", legacy.name)}
         </ButtonItem>
       </PanelSectionRow>
     </PanelSection>
@@ -1397,20 +1374,19 @@ function Fsr4Libraries({ onImported }: { onImported: () => void }) {
     finally { setBusy(false); }
   };
   return (
-    <PanelSection title="FSR 4 libraries">
+    <PanelSection title={t("FSR 4 libraries")}>
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("driver")}
           description={library?.available
-            ? `Imported AMD library ${library.version}. Select a newer driver to update. Closed games using Lite update automatically.`
-            : "Download an AMD Windows driver with FSR 4 Lite, then select its .exe here. Extracts and imports the libraries without installing the driver. Internet is needed only if portable 7-Zip is missing."}>
-          {busy ? "Processing libraries… please wait" : "Extract FSR 4 libraries from driver (.exe)"}
+            ? t("Imported AMD library {0}. Select a newer driver to update. Closed games using Lite update automatically.", library.version)
+            : t("Download an AMD Windows driver with FSR 4 Lite, then select its .exe here. Extracts and imports the libraries without installing the driver. Internet is needed only if portable 7-Zip is missing.")}>
+          {busy ? t("Processing libraries… please wait") : t("Extract FSR 4 libraries from driver (.exe)")}
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("zip")}
-          description="Already extracted? Choose a ZIP containing amdxcffx64.dll and amdvkffx64.dll. For a new game, choose FSR 4 Lite in Upscaler after importing.">
-          Import libraries from ZIP
-        </ButtonItem>
+          description={t("Already extracted? Choose a ZIP containing amdxcffx64.dll and amdvkffx64.dll. For a new game, choose FSR 4 Lite in Upscaler after importing.")}>
+          {" "}{t("Import libraries from ZIP")}{" "}</ButtonItem>
       </PanelSectionRow>
     </PanelSection>
   );
@@ -1440,25 +1416,32 @@ function Content() {
   );
 }
 
+function LocalizedContent() {
+  const language = useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
+  return <Content key={language} />;
+}
+
 export default definePlugin(() => {
+  const stopLanguage = initializeLanguage(getUiLanguage);
   // The backend checks GitHub at start and every 6 hours and emits this once per new version.
   const onUpdate = (kind: string, version: string) => {
     const what: Record<string, string> = {
-      plugin: `${TITLE} ${version} is out: open the plugin to update.`,
-      anr: `ANR FG ${version} is out: open ${TITLE} to download it.`,
-      lsfg: `lsfg-vk ${version} is out: open ${TITLE} to update it.`,
-      xefg: `XeFG ${version} is out: it comes with the next ${TITLE} update.`,
-      fsr4: `A newer FSR 4 DLL (${version}) is available: open ${TITLE} to update your games.`,
+      plugin: t("{0} {1} is out: open the plugin to update.", TITLE, version),
+      anr: t("ANR FG {0} is out: open {1} to download it.", version, TITLE),
+      lsfg: t("lsfg-vk {0} is out: open {1} to update it.", version, TITLE),
+      xefg: t("XeFG {0} is out: it comes with the next {1} update.", version, TITLE),
+      fsr4: t("A newer FSR 4 DLL ({0}) is available: open {1} to update your games.", version, TITLE),
     };
-    toast(what[kind] || `${kind} ${version} is out.`);
+    toast(what[kind] || t("{0} {1} is out.", kind, version));
   };
   const listener = addEventListener<[string, string]>("anr_update_available", onUpdate);
   return {
     name: TITLE,
     titleView: <div>{TITLE}</div>,
-    content: <Content />,
+    content: <LocalizedContent />,
     icon: <MdAutoAwesome />,
     onDismount() {
+      stopLanguage();
       removeEventListener("anr_update_available", listener);
     },
   };

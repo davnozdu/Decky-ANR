@@ -1,4 +1,9 @@
-import { callable } from "@decky/api";
+import { callable as rawCallable } from "@decky/api";
+import { localizeResult } from "./i18n";
+const callable = <Args extends any[] = [], Return = void>(route: string) => {
+  const call = rawCallable<Args, Return>(route);
+  return async (...args: Args): Promise<Return> => localizeResult(await call(...args));
+};
 
 export type Result = { status: "success" | "error"; message?: string; output?: string };
 
@@ -173,6 +178,7 @@ export const getLegacyInfo = callable<[], Result & { legacy_installed?: boolean;
 export type LsfgProfile = { active_in: string[]; multiplier: number; flow_scale: number; performance_mode: boolean };
 export type LsfgStatus = Result & {
   installed?: boolean; version?: string | null; dll?: string | null;
+  dll_source?: "imported" | "steam"; home?: string;
   dll_state?: "ok" | "wrong_branch" | "missing"; profile?: LsfgProfile | null;
 };
 export const getLsfgStatus = callable<[appid: string], LsfgStatus>("get_lsfg_status");
@@ -187,3 +193,7 @@ export type Fsr4Library = Result & { available?: boolean; version?: string | nul
 export const getFsr4Library = callable<[], Fsr4Library>("get_fsr4_library");
 export const importFsr4Libraries = callable<[archive: string], Result & { version?: string }>("import_fsr4_libraries");
 export const extractFsr4Driver = callable<[driver: string], Result>("extract_fsr4_driver");
+
+export const importLsfgLibrary = callable<[filename: string], Result>("import_lsfg_library");
+
+export const getUiLanguage = callable<[], { language?: string }>("get_ui_language");

@@ -15,8 +15,8 @@ def check_zip(data, depth=0):
         assert z.testzip() is None
         for item in z.infolist():
             name = item.filename.replace('\\', '/').lower()
-            assert not any(p in name.split('/') for p in ('private', 'local-fsr4', 'fsr4-libraries', 'fsr4-archives')), name
-            assert Path(name).name not in ('amdxcffx64.dll', 'amdvkffx64.dll'), name
+            assert not any(p in name.split('/') for p in ('private', 'local-fsr4', 'fsr4-libraries', 'fsr4-archives', 'lsfg-library')), name
+            assert Path(name).name not in ('amdxcffx64.dll', 'amdvkffx64.dll', 'lsfg-vk.dll', 'lossless.dll'), name
             if name.endswith('.zip'):
                 assert depth < 4
                 check_zip(z.read(item), depth + 1)
@@ -35,5 +35,5 @@ with zipfile.ZipFile(extractor, 'w', zipfile.ZIP_DEFLATED) as z:
         z.write(ROOT / name, 'FSR4-Extractor/' + name)
 for path in (plugin, extractor):
     check_zip(path.read_bytes())
-    print(f'{path}: {path.stat().st_size} bytes; no AMD DLLs (nested archives checked)')
+    print(f'{path}: {path.stat().st_size} bytes; no AMD/LS DLLs (nested archives checked)')
 (OUT / 'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in (plugin, extractor)))

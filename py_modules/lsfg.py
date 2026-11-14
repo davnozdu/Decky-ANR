@@ -1,7 +1,7 @@
 """lsfg-vk (Lossless Scaling frame generation for Linux) as a per-game frame generator.
 
 lsfg-vk is a Vulkan layer that works in any game, also without DLSS Frame Generation. It needs the user's own
-copy of Lossless Scaling (Steam app 993090, branch "lsfg-vk"), whose lsfg-vk.dll it loads. lsfg-vk itself is
+copy of Lossless Scaling (Steam app 993090, branch "lsfg-vk"), whose lsfg-vk.dll it loads in place or imports locally. lsfg-vk itself is
 CC BY-NC-ND 4.0: this plugin never ships or modifies it; it downloads the official build from builds.lsfg-vk.dev
 into ~/.local (as its install guide does) and only edits its own profiles in ~/.config/lsfg-vk/conf.toml.
 """
@@ -16,6 +16,9 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import struct
+import zipfile
+import stat
 from pathlib import Path, PurePosixPath
 
 BUILDS_URL = "https://builds.lsfg-vk.dev/"
@@ -69,7 +72,20 @@ class LsfgMixin:
                 return folder
         return None
 
+    def _lsfg_imported_dll(self) -> Path | None:
+        rec = self._load_state().get("lsfg_library", {})
+        digest = rec.get("sha256", "")
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            return None
+        path = self._runtime_dir() / "lsfg-library" / digest / "lsfg-vk.dll"
+        if path.is_file() and self._file_sha256(path) == digest:
+            return path
+        return None
+
     def _lsfg_dll(self) -> Path | None:
+        imported = self._lsfg_imported_dll()
+        if imported:
+            return imported
         folder = self._lsfg_folder()
         for name in DLL_NAMES:
             if folder and (folder / name).is_file():
@@ -82,6 +98,90 @@ class LsfgMixin:
             return "ok"
         folder = self._lsfg_folder()
         return "wrong_branch" if folder and (folder / "Lossless.dll").is_file() else "missing"
+
+    @staticmethod
+    def _lsfg_read_library(path: Path) -> bytes:
+        maximum = 32 * 1024 * 1024
+        if not path.is_file():
+            raise ValueError("Select lsfg-vk.dll or a ZIP containing it")
+        if path.suffix.lower() == ".zip":
+            if path.stat().st_size > 64 * 1024 * 1024:
+                raise ValueError("Lossless Scaling ZIP is too large (maximum 64 MB)")
+            with zipfile.ZipFile(path) as z:
+                matches = []
+                if len(z.infolist()) > 1000:
+                    raise ValueError("Too many files in ZIP")
+                for item in z.infolist():
+                    name = PurePosixPath(item.filename.replace("\\", "/"))
+                    if name.is_absolute() or ".." in name.parts or re.match(r"^[A-Za-z]:", str(name)) or stat.S_ISLNK(item.external_attr >> 16):
+                        raise ValueError("Unsafe ZIP member")
+                    if name.name.lower() == "lsfg-vk.dll" and not item.is_dir():
+                        matches.append(item)
+                if len(matches) != 1:
+                    raise ValueError("ZIP must contain exactly one lsfg-vk.dll")
+                member = matches[0]
+                if not 100_000 <= member.file_size <= maximum or member.flag_bits & 1:
+                    raise ValueError("Invalid or encrypted lsfg-vk.dll")
+                data = z.read(member)
+        elif path.name.lower() == "lsfg-vk.dll" and 100_000 <= path.stat().st_size <= maximum:
+            data = path.read_bytes()
+        else:
+            raise ValueError("Select lsfg-vk.dll or a ZIP containing it; Lossless.dll is not compatible")
+        if data[:2] != b"MZ":
+            raise ValueError("Invalid lsfg-vk.dll: Windows DLL header is missing")
+        offset = struct.unpack_from("<I", data, 0x3c)[0]
+        if offset + 24 > len(data) or data[offset:offset + 4] != b"PE\x00\x00" or struct.unpack_from("<H", data, offset + 4)[0] != 0x8664 or not struct.unpack_from("<H", data, offset + 22)[0] & 0x2000:
+            raise ValueError("Invalid lsfg-vk.dll: expected an x64 DLL")
+        if bytes.fromhex("03022307") not in data:
+            raise ValueError("Vulkan shaders are missing from lsfg-vk.dll")
+        return data
+
+    def _import_lsfg_library(self, filename: str) -> dict:
+        data = self._lsfg_read_library(Path(filename).expanduser())
+        digest = hashlib.sha256(data).hexdigest()
+        folder = self._runtime_dir() / "lsfg-library" / digest
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / "lsfg-vk.dll"
+        if dest.exists() and self._file_sha256(dest) != digest:
+            raise ValueError("Stored Lossless Scaling library was modified; import cancelled")
+        if not dest.exists():
+            with tempfile.NamedTemporaryFile(dir=folder, delete=False) as f:
+                tmp = Path(f.name)
+                f.write(data)
+            os.replace(tmp, dest)
+        state = self._load_state()
+        previous = state.get("lsfg_library")
+        cfg = self._lsfg_config()
+        original = cfg.read_bytes() if cfg.exists() else None
+        state["lsfg_library"] = {"sha256": digest, "size": len(data)}
+        self._save_state(state)
+        try:
+            self._lsfg_write_config()
+            if self._lsfg_installed() and cfg.exists():
+                ok, detail = self._lsfg_validate()
+                if not ok:
+                    raise ValueError("lsfg-vk rejected the configuration: " + detail[-300:])
+        except Exception:
+            state = self._load_state()
+            if previous is None:
+                state.pop("lsfg_library", None)
+            else:
+                state["lsfg_library"] = previous
+            self._save_state(state)
+            if original is None:
+                cfg.unlink(missing_ok=True)
+            else:
+                cfg.write_bytes(original)
+            raise
+        return {"status": "success", "message": "Lossless Scaling library imported. Restart games using Lossless Scaling to apply it."}
+
+    async def import_lsfg_library(self, filename: str) -> dict:
+        import asyncio
+        try:
+            async with self._generator_lock():
+                return await asyncio.to_thread(self._import_lsfg_library, str(filename))
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
 
     # ── Install / update ──────────────────────────────────────────────────────
 
@@ -262,7 +362,8 @@ class LsfgMixin:
             profile = self._lsfg_profiles().get(str(appid)) if appid else None
             return {"status": "success", "installed": bool(rec), "version": (rec or {}).get("version"),
                     "dll": str(dll) if dll else None, "dll_state": self._lsfg_dll_state(), "profile": profile,
-                    "ls_appid": LS_APPID}
+                    "ls_appid": LS_APPID, "dll_source": "imported" if self._lsfg_imported_dll() else "steam",
+                    "home": str(self._home())}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
