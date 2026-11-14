@@ -1447,6 +1447,24 @@ class Plugin(GeneratorMixin, LsfgMixin):
                 lines.insert(header + 1, f"{key}={val}")
         ini.write_text("\n".join(lines), encoding="utf-8")
 
+    # RDNA 2: Steam Deck (Van Gogh, Sephiroth), Radeon 680M/660M/610M APUs, RX 6000 desktop/laptop GPUs.
+    RDNA2_DEVICE_IDS = {0x163F, 0x1435, 0x1681, 0x1506, 0x164E, 0x13C0}
+
+    def _gpu_family(self) -> str:
+        for dev in Path("/sys/class/drm").glob("card*/device"):
+            try:
+                if (dev / "vendor").read_text().strip().lower() != "0x1002":
+                    continue
+                did = int((dev / "device").read_text().strip(), 16)
+            except Exception:
+                continue
+            if did in self.RDNA4_DEVICE_IDS:
+                return "rdna4"
+            if did in self.RDNA2_DEVICE_IDS or 0x73A0 <= did <= 0x73FF or 0x7420 <= did <= 0x743F:
+                return "rdna2"
+            return "rdna3"  # RDNA 3/3.5 and anything newer we do not list
+        return "unknown"
+
     def _gpu_is_rdna4(self) -> bool:
         for dev in Path("/sys/class/drm").glob("card*/device"):
             try:
@@ -1476,12 +1494,26 @@ class Plugin(GeneratorMixin, LsfgMixin):
             return None
 
     def _fsr4_dll_info(self, path: Path) -> dict | None:
+        """AMD's FSR 4 driver dll (version from its PE resources), cached by path, size and mtime: the file is 65 MB."""
         try:
-            if path.stat().st_size < 1_000_000:
-                return None
+            st = path.stat()
+        except OSError:
+            return None
+        if st.st_size < 1_000_000:
+            return None
+        cache = self.__dict__.setdefault("_fsr4_info_cache", {})
+        key = (str(path), st.st_size, st.st_mtime_ns)
+        if key in cache:
+            return dict(cache[key]) if cache[key] else None
+        try:
             data = path.read_bytes()
         except OSError:
             return None
+        info = self._fsr4_dll_parse(path, data)
+        cache[key] = info
+        return dict(info) if info else None
+
+    def _fsr4_dll_parse(self, path: Path, data: bytes) -> dict | None:
         if data[:2] != b"MZ":
             return None
         company = self._pe_string(data, "CompanyName") or ""
@@ -1490,23 +1522,63 @@ class Plugin(GeneratorMixin, LsfgMixin):
         version = self._pe_string(data, "FileVersion") or "0"
         return {"path": str(path), "version": version, "size": len(data)}
 
-    def _find_fsr4_dll(self, appid: str | None) -> dict | None:
-        """Newest AMD-signed amdxcffx64.dll that Proton put into a prefix (PROTON_FFX4_UPGRADE), this game's first."""
+    PROTON_EXPERIMENTAL_APPID = "1493710"
+
+    def _fsr4_candidates(self, appid: str | None) -> list[dict]:
+        """Every AMD-signed amdxcffx64.dll that Valve's or another Proton ships or put into a prefix.
+        Valve's Proton Experimental keeps one in contrib/, so a Steam install normally has it already."""
         found: list[dict] = []
+        seen: set[str] = set()
+
+        def add(path: Path, source: str, rank: int) -> None:
+            key = str(path)
+            if key in seen:
+                return
+            seen.add(key)
+            info = self._fsr4_dll_info(path)
+            if info:
+                info.update({"source": source, "rank": rank, "own_prefix": rank == 2})
+                found.append(info)
+
+        tool_roots = [self._home() / ".steam" / "root" / "compatibilitytools.d",
+                      self._home() / ".local" / "share" / "Steam" / "compatibilitytools.d",
+                      Path("/usr/share/steam/compatibilitytools.d")]
+        for library in self._steam_library_paths():
+            common = library / "steamapps" / "common"
+            if common.is_dir():
+                for proton in sorted(common.glob("Proton*")):
+                    rank = 3 if proton.name == "Proton - Experimental" else 1
+                    add(proton / "contrib" / self.FSR4_DLL, proton.name, rank)
+            tool_roots.append(library / "compatibilitytools.d")
+        for root in tool_roots:
+            try:
+                tools = [t for t in root.iterdir() if t.is_dir()] if root.is_dir() else []
+            except OSError:
+                tools = []
+            for tool in tools:
+                for rel in ("contrib", "files/share/fsr4", "files/lib/wine/x86_64-windows"):
+                    add(tool / rel / self.FSR4_DLL, tool.name, 1)
         for library in self._steam_library_paths():
             compat = library / "steamapps" / "compatdata"
-            if not compat.exists():
+            if not compat.is_dir():
                 continue
-            order = sorted(compat.iterdir(), key=lambda p: p.name != str(appid))
-            for prefix in order:
-                info = self._fsr4_dll_info(prefix / "pfx" / "drive_c" / "windows" / "system32" / self.FSR4_DLL)
-                if info:
-                    info["own_prefix"] = prefix.name == str(appid)
-                    found.append(info)
+            for prefix in compat.iterdir():
+                own = prefix.name == str(appid)
+                add(prefix / "pfx" / "drive_c" / "windows" / "system32" / self.FSR4_DLL,
+                    "this game's Proton prefix" if own else f"Proton prefix {prefix.name}", 2 if own else 0)
+        return found
+
+    def _find_fsr4_dll(self, appid: str | None) -> dict | None:
+        found = self._fsr4_candidates(appid)
         if not found:
             return None
-        found.sort(key=lambda x: (_version_key(x["version"]), x["own_prefix"]), reverse=True)
+        # newest version first; among equal ones Valve's Proton Experimental, then this game's prefix
+        found.sort(key=lambda x: (_version_key(x["version"]), x["rank"]), reverse=True)
         return found[0]
+
+    def _proton_experimental_installed(self) -> bool:
+        return any((lib / "steamapps" / "common" / "Proton - Experimental" / "proton").exists()
+                   for lib in self._steam_library_paths())
 
     def _upscaler_values(self, choice: str, watermark: bool) -> dict[tuple[str, str], str]:
         wm = "true" if watermark else "auto"
@@ -1538,9 +1610,9 @@ class Plugin(GeneratorMixin, LsfgMixin):
             src = self._find_fsr4_dll(appid)
             if not src:
                 return {"status": "error", "need_ffx4_upgrade": True,
-                        "message": "No FSR 4 driver DLL on this device yet. Add PROTON_FFX4_UPGRADE=1 to the "
-                                   "game's launch options (proton-cachyos or GE-Proton), start the game once, "
-                                   "then choose FSR 4 again."}
+                        "message": "FSR 4 comes with Valve's Proton Experimental: install it from the Steam library "
+                                   "(Tools), then choose FSR 4 again. Or add PROTON_FFX4_UPGRADE=1 to the launch "
+                                   "options with proton-cachyos / GE-Proton and start the game once."}
             existing = self._fsr4_dll_info(dll_dest) if dll_dest.exists() else None
             ours = any(m.get("path") == str(dll_dest) for m in managed)
             if dll_dest.exists() and not ours and not existing:
@@ -1549,7 +1621,10 @@ class Plugin(GeneratorMixin, LsfgMixin):
                 shutil.copy2(src["path"], dll_dest)
             if not ours:
                 managed.append({"path": str(dll_dest), "sha256": self._file_sha256(dll_dest)})
-            note = f" (AMD FidelityFX {src['version']})"
+            note = f" (AMD FidelityFX {src['version']} from {src.get('source', 'Proton')})"
+            if self._gpu_family() == "rdna2":
+                note += (". This GPU (RDNA 2, e.g. Steam Deck) has no INT8 matrix units: FSR 4 runs, but costs "
+                         "several ms a frame; FSR 3.1 is usually the better choice here")
         else:
             # Remove the DLL only if we put it there and it is unchanged.
             keep = []
@@ -1671,7 +1746,8 @@ class Plugin(GeneratorMixin, LsfgMixin):
                                        for k, v in self.RENDER_QUALITY.items()],
                     "output": list(out) if out else None,
                     "watermark": bool(entry.get("upscaler_watermark")),
-                    "fsr4_source": src, "rdna4": self._gpu_is_rdna4(),
+                    "fsr4_source": src, "rdna4": self._gpu_is_rdna4(), "gpu_family": self._gpu_family(),
+                    "proton_experimental": self._proton_experimental_installed(),
                     "options": [{"value": k, "label": v} for k, v in self.UPSCALERS.items()]}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}

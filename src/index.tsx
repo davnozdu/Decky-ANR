@@ -55,6 +55,8 @@ import {
 } from "./api";
 import { copyText, getLaunchOptions, setLaunchOptions } from "./steam";
 
+declare const SteamClient: any;
+
 const TITLE = "Decky FrameGen Hub";
 const toast = (body: string) => toaster.toast({ title: TITLE, body });
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -809,14 +811,21 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       description={
                         upscaler.choice === "fsr4"
                           ? `FSR 4 ${upscaler.rdna4 ? "FP8" : "INT8"} model${
-                              upscaler.fsr4_source ? `, AMD FidelityFX ${upscaler.fsr4_source.version}` : ""
-                            }`
+                              upscaler.fsr4_source
+                                ? `, AMD FidelityFX ${upscaler.fsr4_source.version} from ${upscaler.fsr4_source.source || "Proton"}`
+                                : ""
+                            }${upscaler.gpu_family === "rdna2" ? ". Slow on RDNA 2 (Steam Deck): FSR 3.1 is usually better." : ""}`
+                          : upscaler.gpu_family === "rdna2"
+                          ? "OptiScaler's upscaler. On RDNA 2 (Steam Deck) FSR 3.1 is the fast choice."
                           : "OptiScaler's upscaler. The game's DLSS option drives it."
                       }
                       selectedOption={upscaler.choice || "package"}
                       rgOptions={upscaler.options.map((o) => ({
                         data: o.value,
-                        label: o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs setup)` : o.label,
+                        label:
+                          o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs Proton Experimental)`
+                          : o.value === "fsr4" && upscaler.gpu_family === "rdna2" ? `${o.label} · slow on this GPU`
+                          : o.label,
                       }))}
                       onChange={(o) => void changeUpscaler(String(o.data), Boolean(upscaler.watermark))}
                     />
@@ -842,11 +851,28 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                     </PanelSectionRow>
                   )}
                   {!upscaler.fsr4_source && (
-                    <PanelSectionRow>
-                      <ButtonItem layout="below" onClick={addFfx4Upgrade}>
-                        Get FSR 4 through Proton (PROTON_FFX4_UPGRADE)
-                      </ButtonItem>
-                    </PanelSectionRow>
+                    <>
+                      {!upscaler.proton_experimental && (
+                        <PanelSectionRow>
+                          <ButtonItem layout="below"
+                            description="Valve's Proton Experimental carries AMD's FSR 4 library; the plugin uses it from there."
+                            onClick={() => {
+                              try {
+                                SteamClient.URL.ExecuteSteamURL("steam://install/1493710");
+                              } catch {
+                                toast("Install Proton Experimental from the Steam library (Tools).");
+                              }
+                            }}>
+                            Install Proton Experimental (for FSR 4)
+                          </ButtonItem>
+                        </PanelSectionRow>
+                      )}
+                      <PanelSectionRow>
+                        <ButtonItem layout="below" onClick={addFfx4Upgrade}>
+                          Or: FSR 4 through proton-cachyos / GE-Proton (PROTON_FFX4_UPGRADE)
+                        </ButtonItem>
+                      </PanelSectionRow>
+                    </>
                   )}
                   {upscaler.choice === "fsr4" && (
                     <PanelSectionRow>

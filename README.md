@@ -17,6 +17,10 @@ Updating from Decky ANR keeps your game profiles; the plugin then offers to remo
    choose NVIDIA DLSS and turn **DLSS Frame Generation** on.
 4. For the most FPS: Upscaler **FSR 4** (cleaner) or **FSR 3.1** (faster), Render quality **Balanced/Performance**,
    run **Benchmark** once and use its best compute path for ANR, keep 2X, and set an FPS limit for steady pacing.
+   **FSR 4 needs no environment variables:** the plugin takes AMD's library from Valve's **Proton Experimental**
+   (or offers to install it) and copies it next to OptiScaler. The game must run on Proton 11+.
+5. **Steam Deck (RDNA 2):** Lossless Scaling is the best fit (2X, flow scale 50–75%, performance mode); use
+   **FSR 3.1** — FSR 4 runs but costs several ms a frame on RDNA 2. Not yet tested on a real Deck.
 
 | Generator | Pick it for | Forza Horizon 6, ROG Xbox Ally X, 2X |
 |---|---|---|

@@ -141,7 +141,9 @@ export type UpscalerInfo = Result & {
   choice?: string;
   watermark?: boolean;
   rdna4?: boolean;
-  fsr4_source?: { path: string; version: string; own_prefix: boolean } | null;
+  fsr4_source?: { path: string; version: string; own_prefix: boolean; source?: string } | null;
+  gpu_family?: "rdna2" | "rdna3" | "rdna4" | "unknown";
+  proton_experimental?: boolean;
   options?: { value: string; label: string }[];
   render_quality?: string;
   render_options?: { value: string; label: string; ratio: number | null }[];
