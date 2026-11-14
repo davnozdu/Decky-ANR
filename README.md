@@ -26,7 +26,9 @@ XeFG is for **DirectX 12** games with DLSS FG inputs, using **SDR or HDR10** (no
 Start with 2X. Check **Show generator log** after starting the game (`Creating XeFG context`).
 
 Tested: Forza Horizon 6 on ROG Xbox Ally X (Radeon 890M, Mesa 26.2.6, proton-cachyos 11), FSR 4 Balanced, 2X:
-XeFG ~73 FPS shown (69–84 while driving) vs ANR FG ~71 (65–86), measured from gamescope; XeFG ran the
+**Lossless Scaling (lsfg-vk 2, flow 75%) ~93 FPS shown (84–108)**, XeFG ~73 (69–84), ANR FG ~71 (65–86), measured from
+gamescope; lsfg-vk costs ~3.4 ms per real frame at 1080p 2X (1.9 ms with flow 50% + performance mode) and leaves the
+game more GPU time, at the cost of more artifacts (no motion vectors). XeFG ran the
 ported XMX model through its DXIL path (`Network path: XMX (native), model 16`, CUDA route inactive), no GPU faults,
 and showed fewer artifacts. Other games and GPUs: unverified.
 The loader detected as Vulkan (`winmm.dll`) cannot select XeFG. Other games need manual DX12 verification.

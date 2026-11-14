@@ -1628,6 +1628,7 @@ class Plugin(GeneratorMixin, LsfgMixin):
                 r = await self.set_lsfg_profile(appid, True, multiplier, flow_scale, performance_mode)
                 if r.get("status") != "success":
                     return r
+                # set_lsfg_profile already says to turn the game's own frame generation off
                 if patched:
                     _, _, ini = self._target_and_ini(appid)
                     self._set_ini_sections(ini, {("FrameGen", "FGInput"): "nofg"})
@@ -1638,8 +1639,13 @@ class Plugin(GeneratorMixin, LsfgMixin):
             if choice in ("anr", "xefg"):
                 if not patched:
                     return {"status": "error", "message": "Install ANR first: ANR FG and XeFG run through its OptiScaler."}
+                was = (self._load_state()["games"].get(appid) or {}).get("generator")
                 await self.set_lsfg_profile(appid, False)
-                return await self.set_frame_generator(appid, choice)
+                r = await self.set_frame_generator(appid, choice)
+                if r.get("status") == "success" and was in ("lsfg", "off"):
+                    r["message"] = (r.get("message", "") + " Turn the game's DLSS Frame Generation back on "
+                                    "in its graphics settings: ANR FG and XeFG replace it.").strip()
+                return r
             if choice == "off":
                 await self.set_lsfg_profile(appid, False)
                 if patched:
