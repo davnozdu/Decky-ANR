@@ -38,6 +38,15 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## Automatic ANR updates
+
+**Automatically update ANR FG** is enabled by default. At startup and every 6 hours the plugin checks upstream,
+downloads newer full/add-on packages only when all published SHA-256 checksums pass, and updates closed patched
+games while retaining the selected generator, profiles and imported libraries. Running games are skipped and
+retried every minute after closing, without extra GitHub polling. A failed download never activates a new version.
+Turn the switch off to keep manual updates. Plugin/lsfg-vk/XeFG updates still use their existing notifications;
+user-supplied AMD/LS libraries are only changed through their import controls.
+
 ## Bundled ANR FG V.B16 (0.2.5)
 
 The bundled full/add-on packages now use [ANR FG V.B16](https://github.com/apex-compute/ANR/releases/tag/FG-V.B16).

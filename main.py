@@ -241,11 +241,55 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
         self._save_state(state)
         return info
 
+    def _auto_update_anr_sync(self, info: dict) -> dict:
+        if not self._load_state().get("auto_update_anr", True):
+            self._auto_anr_pending = False
+            return {"downloaded": False, "updated": [], "skipped": []}
+        downloaded = False
+        latest = info.get("anr_latest")
+        if latest and _version_key(latest) > _version_key(self._active_version() or ""):
+            result = self._download_latest(require_checksum=True)
+            # Activation happens only after all packages pass verification and extraction.
+            state = self._load_state()
+            state["active_version"] = result["version"]
+            self._save_state(state)
+            downloaded = bool(result["downloaded"])
+        result = self._update_all()
+        self._auto_anr_pending = any(self._game(g["appid"]) and self._is_running(self._game(g["appid"]))
+                                     for g in self._outdated_games())
+        return {**result, "version": self._active_version(), "downloaded": downloaded}
+
+    async def _auto_update_anr(self, info: dict) -> dict:
+        async with self._generator_lock():
+            result = await asyncio.to_thread(self._auto_update_anr_sync, info)
+        if result.get("downloaded") or result.get("updated"):
+            await decky.emit("anr_update_available", "anr_auto", result.get("version"))
+        return result
+
+    async def get_auto_update_anr(self) -> dict:
+        return {"enabled": bool(self._load_state().get("auto_update_anr", True))}
+
+    async def set_auto_update_anr(self, enabled: bool) -> dict:
+        async with self._generator_lock():
+            state = self._load_state()
+            state["auto_update_anr"] = bool(enabled)
+            self._save_state(state)
+            if not enabled:
+                self._auto_anr_pending = False
+        return {"status": "success", "enabled": bool(enabled),
+                "message": "Automatic ANR FG updates enabled." if enabled else "Automatic ANR FG updates disabled."}
+
     async def _update_loop(self):
         await asyncio.sleep(UPDATE_CHECK_FIRST_DELAY)
         while True:
             try:
                 info = await asyncio.to_thread(self._check_updates_sync)
+                try:
+                    await self._auto_update_anr(info)
+                    if info.get("anr_latest"):
+                        info["anr_update"] = _version_key(info["anr_latest"]) > _version_key(self._active_version() or "")
+                except Exception as exc:
+                    info.setdefault("errors", []).append(f"ANR auto-update: {exc}")
                 state = self._load_state()
                 notified = state.setdefault("notified", {})
                 changed = False
@@ -274,7 +318,16 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
                 raise
             except Exception as exc:
                 decky.logger.error(f"[ANR] update loop: {exc}")
-            await asyncio.sleep(UPDATE_CHECK_INTERVAL)
+            # Retry waiting games without polling GitHub every minute.
+            for _ in range(UPDATE_CHECK_INTERVAL // 60):
+                await asyncio.sleep(60)
+                if getattr(self, "_auto_anr_pending", False):
+                    try:
+                        await self._auto_update_anr({})
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        decky.logger.error(f"[ANR] deferred update: {exc}")
 
     async def check_updates(self, force: bool = False) -> dict:
         try:
@@ -494,7 +547,7 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
                 raise RuntimeError(f"curl: {proc.stderr.decode('utf-8', 'replace').strip()}") from exc
             return proc.stdout
 
-    def _download_latest(self) -> dict:
+    def _download_latest(self, require_checksum: bool = False) -> dict:
         release = json.loads(self._http_get(GITHUB_API_LATEST, "application/vnd.github+json"))
         assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
         wanted: dict[str, tuple[str, str]] = {}
@@ -505,7 +558,7 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
                 version = m["version"]
         if "full" not in wanted:
             raise ValueError(f"release {release.get('tag_name')} has no anr-fg-*-full.zip")
-        if version in self._installed_versions():
+        if all((self._package_dir(version, kind) / "install.sh").is_file() for kind in wanted):
             return {"version": version, "downloaded": False}
         sums: dict[str, str] = {}
         if "SHA256SUMS.txt" in assets:
@@ -515,11 +568,17 @@ class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
                     sums[parts[1].lstrip("*")] = parts[0].lower()
         download_dir = self._runtime_dir() / "downloads"
         download_dir.mkdir(parents=True, exist_ok=True)
+        payloads = {}
         for kind, (name, url) in wanted.items():
+            if require_checksum and name not in sums:
+                raise ValueError(f"Missing SHA-256 for {name}; automatic update cancelled")
             data = self._http_get(url)
             digest = hashlib.sha256(data).hexdigest()
             if name in sums and sums[name] != digest:
                 raise ValueError(f"{name}: SHA256 does not match SHA256SUMS.txt")
+            payloads[kind] = (name, data)
+        # Verify every package before adding any version to the installed set.
+        for kind, (name, data) in payloads.items():
             archive = download_dir / name
             archive.write_bytes(data)
             try:

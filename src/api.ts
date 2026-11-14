@@ -197,3 +197,6 @@ export const extractFsr4Driver = callable<[driver: string], Result>("extract_fsr
 export const importLsfgLibrary = callable<[filename: string], Result>("import_lsfg_library");
 
 export const getUiLanguage = callable<[], { language?: string }>("get_ui_language");
+
+export const getAutoUpdateAnr = callable<[], { enabled: boolean }>("get_auto_update_anr");
+export const setAutoUpdateAnr = callable<[enabled: boolean], Result>("set_auto_update_anr");

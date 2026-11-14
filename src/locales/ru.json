@@ -379,5 +379,12 @@
   "No Lite-capable DLL pair found: {0}": "Не найдена пара DLL с поддержкой Lite: {0}",
   "MB)": "МБ)",
   " · {0} {1} ms": " · {0} {1} мс",
-  "Automatic": "Автоматически"
+  "Automatic": "Автоматически",
+  "Automatically update ANR FG": "Автоматически обновлять ANR FG",
+  "Checks every 6 hours, verifies SHA-256, and updates closed games. Running games update after closing. Profiles and generator choice are preserved.": "Проверка каждые 6 часов, проверка SHA-256 и обновление закрытых игр. Запущенные игры обновятся после закрытия. Профили и выбор генератора сохраняются.",
+  "Automatic ANR FG updates enabled.": "Автоматическое обновление ANR FG включено.",
+  "Automatic ANR FG updates disabled.": "Автоматическое обновление ANR FG отключено.",
+  "ANR FG {0} updated automatically. Running games update after closing.": "ANR FG {0} обновлён автоматически. Запущенные игры обновятся после закрытия.",
+  "Missing SHA-256 for {0}; automatic update cancelled": "Нет SHA-256 для {0}; автоматическое обновление отменено",
+  "ANR auto-update: {0}": "Автообновление ANR: {0}"
 }

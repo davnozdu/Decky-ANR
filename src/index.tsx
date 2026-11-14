@@ -24,6 +24,8 @@ import {
   GameEntry,
   GameStatus,
   getAnrInfo,
+  getAutoUpdateAnr,
+  setAutoUpdateAnr,
   getUiLanguage,
   getGameStatus,
   getPerformance,
@@ -91,6 +93,8 @@ const banner = (color: string): React.CSSProperties => ({
 function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [updates, setUpdates] = useState<UpdateInfo | null>(null);
+  const [autoAnr, setAutoAnr] = useState(true);
+  useEffect(() => { void getAutoUpdateAnr().then((r) => setAutoAnr(r.enabled)).catch(() => {}); }, []);
   const [outdated, setOutdated] = useState<{ appid: string; name: string; version: string }[]>([]);
 
   const loadUpdates = useCallback(async (force: boolean) => {
@@ -148,6 +152,15 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
 
   return (
     <PanelSection title="ANR FG">
+      <PanelSectionRow>
+        <ToggleField label={t("Automatically update ANR FG")}
+          description={t("Checks every 6 hours, verifies SHA-256, and updates closed games. Running games update after closing. Profiles and generator choice are preserved.")}
+          checked={autoAnr} disabled={busy !== null}
+          onChange={async (enabled: boolean) => {
+            await run("auto-anr", () => setAutoUpdateAnr(enabled));
+            setAutoAnr((await getAutoUpdateAnr()).enabled);
+          }} />
+      </PanelSectionRow>
       {updates?.plugin_update && (
         <>
           <PanelSectionRow>
@@ -1427,6 +1440,7 @@ export default definePlugin(() => {
   const onUpdate = (kind: string, version: string) => {
     const what: Record<string, string> = {
       plugin: t("{0} {1} is out: open the plugin to update.", TITLE, version),
+      anr_auto: t("ANR FG {0} updated automatically. Running games update after closing.", version),
       anr: t("ANR FG {0} is out: open {1} to download it.", version, TITLE),
       lsfg: t("lsfg-vk {0} is out: open {1} to update it.", version, TITLE),
       xefg: t("XeFG {0} is out: it comes with the next {1} update.", version, TITLE),
