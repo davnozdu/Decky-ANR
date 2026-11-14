@@ -1,4 +1,4 @@
-"""Decky ANR: installs and manages ANR FG (Apex Neural Rendering frame generation) for Proton games.
+"""Decky FrameGen Hub (formerly Decky ANR): per-game frame generators (ANR FG, XeFG) for Proton games.
 
 ANR FG ships as a DLSS-G replacement (nvngx_dlssg.dll) loaded through OptiScaler. This backend keeps the
 official ANR FG packages (bundled in bin/ or downloaded from GitHub releases), runs their own install.sh and
@@ -27,12 +27,13 @@ from xefg import GeneratorMixin, XEFG_LOG
 
 GITHUB_REPO = "apex-compute/ANR"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-PLUGIN_REPO = "davnozdu/Decky-ANR"
+PLUGIN_REPO = "davnozdu/Decky-FrameGen-Hub"
 PLUGIN_API_LATEST = f"https://api.github.com/repos/{PLUGIN_REPO}/releases/latest"
-PLUGIN_ASSET = "Decky.ANR.zip"
+PLUGIN_ASSET = "Decky.FrameGen.Hub.zip"
+LEGACY_PLUGIN_NAME = "Decky ANR"  # the name up to 0.2.0-beta.1: its settings and data are migrated
 UPDATE_CHECK_INTERVAL = 6 * 3600
 UPDATE_CHECK_FIRST_DELAY = 30
-USER_AGENT = "decky-anr"
+USER_AGENT = "decky-framegen-hub"
 CA_BUNDLES = [
     "/etc/ssl/certs/ca-certificates.crt",
     "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
@@ -85,6 +86,10 @@ class Plugin(GeneratorMixin):
     async def _main(self):
         decky.logger.info("[ANR] plugin loaded")
         try:
+            await asyncio.to_thread(self._migrate_from_legacy)
+        except Exception as exc:
+            decky.logger.error(f"[ANR] migration from {LEGACY_PLUGIN_NAME}: {exc}")
+        try:
             await asyncio.to_thread(self._ensure_bundled_package)
         except Exception as exc:
             decky.logger.error(f"[ANR] could not set up the bundled package: {exc}")
@@ -95,6 +100,59 @@ class Plugin(GeneratorMixin):
         if task:
             task.cancel()
         decky.logger.info("[ANR] plugin unloaded")
+
+    # ── Migration from the old name (Decky ANR) ───────────────────────────────
+
+    def _decky_home(self) -> Path:
+        home = getattr(decky, "DECKY_HOME", None)
+        return Path(str(home)) if home else Path(decky.DECKY_PLUGIN_SETTINGS_DIR).parent.parent
+
+    def _legacy_dirs(self) -> dict[str, Path]:
+        base = self._decky_home()
+        return {"settings": base / "settings" / LEGACY_PLUGIN_NAME, "data": base / "data" / LEGACY_PLUGIN_NAME}
+
+    def _migrate_from_legacy(self) -> None:
+        """Carry the game profiles, ANR packages, XeFG cache and benchmark over from the Decky ANR folders, once."""
+        legacy = self._legacy_dirs()
+        new_settings = Path(decky.DECKY_PLUGIN_SETTINGS_DIR)
+        new_data = Path(decky.DECKY_PLUGIN_RUNTIME_DIR)
+        if legacy["settings"].resolve() == new_settings.resolve():
+            return  # still running under the old folder name
+        old_state = legacy["settings"] / "state.json"
+        if old_state.exists() and not (new_settings / "state.json").exists():
+            new_settings.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_state, new_settings / "state.json")
+            decky.logger.info(f"[ANR] migrated game profiles from {legacy['settings']}")
+        if legacy["data"].is_dir():
+            new_data.mkdir(parents=True, exist_ok=True)
+            for item in legacy["data"].iterdir():
+                dest = new_data / item.name
+                if dest.exists():
+                    continue
+                try:
+                    os.replace(item, dest)  # same filesystem: a rename, not a 1 GB copy
+                except OSError:
+                    if item.is_dir():
+                        shutil.copytree(item, dest)
+                    else:
+                        shutil.copy2(item, dest)
+                decky.logger.info(f"[ANR] migrated {item.name} from {legacy['data']}")
+
+    def _legacy_plugin_installed(self) -> bool:
+        plugins = self._decky_home() / "plugins"
+        try:
+            for folder in plugins.iterdir():
+                try:
+                    if json.loads((folder / "plugin.json").read_text(encoding="utf-8")).get("name") == LEGACY_PLUGIN_NAME:
+                        return True
+                except Exception:
+                    continue
+        except OSError:
+            pass
+        return False
+
+    async def get_legacy_info(self) -> dict:
+        return {"status": "success", "legacy_installed": self._legacy_plugin_installed(), "legacy_name": LEGACY_PLUGIN_NAME}
 
     # ── Update checks ─────────────────────────────────────────────────────────
 
@@ -120,7 +178,9 @@ class Plugin(GeneratorMixin):
         try:
             release = json.loads(self._http_get(PLUGIN_API_LATEST, "application/vnd.github+json"))
             tag = str(release.get("tag_name") or "").lstrip("vV")
-            asset = next((a for a in release.get("assets", []) if a.get("name") == PLUGIN_ASSET), None)
+            assets = release.get("assets", [])
+            asset = next((a for a in assets if a.get("name") == PLUGIN_ASSET), None) or next(
+                (a for a in assets if a.get("name") == "Decky.ANR.zip"), None)
             info["plugin_current"] = self._plugin_version()
             info["plugin_latest"] = tag or None
             info["plugin_update"] = bool(tag and asset) and _plugin_version_key(tag) > _plugin_version_key(self._plugin_version())

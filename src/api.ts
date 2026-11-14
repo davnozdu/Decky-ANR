@@ -155,3 +155,5 @@ export const copyProfile = callable<[appid: string, from_appid: string], Result>
 export const resetProfile = callable<[appid: string], Result>("reset_profile");
 
 export const setFrameGenerator = callable<[appid: string, choice: string], Result>("set_frame_generator");
+
+export const getLegacyInfo = callable<[], Result & { legacy_installed?: boolean; legacy_name?: string }>("get_legacy_info");

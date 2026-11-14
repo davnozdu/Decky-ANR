@@ -19,6 +19,7 @@ import {
   checkUpdates,
   deleteBenchmarkKit,
   getBenchmark,
+  getLegacyInfo,
   startBenchmark,
   GameEntry,
   GameStatus,
@@ -49,7 +50,7 @@ import {
 } from "./api";
 import { copyText, getLaunchOptions, setLaunchOptions } from "./steam";
 
-const TITLE = "Decky ANR";
+const TITLE = "Decky FrameGen Hub";
 const toast = (body: string) => toaster.toast({ title: TITLE, body });
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -114,7 +115,7 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
       await DeckyBackend.call(
         "utilities/install_plugin",
         updates.plugin_url,
-        "Decky ANR",
+        TITLE,
         updates.plugin_latest,
         updates.plugin_hash || false,
         INSTALL_TYPE_UPDATE
@@ -132,7 +133,7 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         <>
           <PanelSectionRow>
             <div style={banner("rgba(88,166,255,0.18)")}>
-              <b>Decky ANR {updates.plugin_latest}</b> is out (you have {updates.plugin_current}).
+              <b>{TITLE} {updates.plugin_latest}</b> is out (you have {updates.plugin_current}).
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
@@ -1173,6 +1174,48 @@ function HelpSection() {
   );
 }
 
+function LegacyBanner() {
+  const [legacy, setLegacy] = useState<{ installed: boolean; name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const r = await getLegacyInfo();
+      setLegacy({ installed: Boolean(r.legacy_installed), name: r.legacy_name || "Decky ANR" });
+    } catch {
+      setLegacy(null);
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+  if (!legacy?.installed) return null;
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await DeckyBackend.call("utilities/uninstall_plugin", legacy.name);
+      toast(`${legacy.name} removed. Your game profiles were carried over.`);
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  };
+  return (
+    <PanelSection title="Renamed">
+      <PanelSectionRow>
+        <div style={banner("rgba(88,166,255,0.18)")}>
+          <b>{legacy.name}</b> is now <b>{TITLE}</b>. Your game profiles, ANR packages and XeFG files were carried
+          over. Remove the old plugin so the two do not both manage the same games.
+        </div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={remove}>
+          {busy ? "Removing…" : `Remove the old ${legacy.name} plugin`}
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
 function Content() {
   const [info, setInfo] = useState<AnrInfo | null>(null);
   const reload = useCallback(async () => {
@@ -1186,6 +1229,7 @@ function Content() {
 
   return (
     <>
+      <LegacyBanner />
       <PackageSection info={info} reload={reload} />
       <GameSection info={info} />
       <BenchmarkSection />
@@ -1199,8 +1243,8 @@ export default definePlugin(() => {
   const onUpdate = (kind: string, version: string) => {
     toast(
       kind === "plugin"
-        ? `Decky ANR ${version} is out: open the plugin to update.`
-        : `ANR FG ${version} is out: open Decky ANR to download it.`
+        ? `${TITLE} ${version} is out: open the plugin to update.`
+        : `ANR FG ${version} is out: open ${TITLE} to download it.`
     );
   };
   const listener = addEventListener<[string, string]>("anr_update_available", onUpdate);

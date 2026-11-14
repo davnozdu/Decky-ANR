@@ -1,4 +1,8 @@
-# Decky ANR
+# Decky FrameGen Hub
+
+*Formerly **Decky ANR**.* Choose the frame generator for each game — **ANR FG** (Apex Neural Rendering) or
+**XeFG** (Intel XeSS frame generation via the XMX port) — with OptiScaler upscalers and per-game profiles.
+Updating from Decky ANR keeps your game profiles; the plugin then offers to remove the old one.
 
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin that installs and manages
 **ANR FG** ([Apex Neural Rendering](https://github.com/apex-compute/ANR) frame generation) in Proton games on
@@ -66,13 +70,13 @@ Sources: [XeFG Build 10](https://github.com/realdody/dlssg-to-xefg-xmx/releases/
   - **Copy the profile** from another game, **Reset the profile**.
 - Per-game `nr_fg.ini` settings: generated frames (2X–6X), compute path, scene cut detection; view the newest log.
 - **Update notifications**: checks GitHub at start and every 6 hours; a Steam toast and a banner tell you when a new
-  ANR FG release or a new Decky ANR version is out. ANR FG downloads in one click (SHA256-checked), the plugin
+  ANR FG release or a new Decky FrameGen Hub version is out. ANR FG downloads in one click (SHA256-checked), the plugin
   updates through Decky's own installer, and **Update all** brings every patched game to the new ANR FG.
 - Shows when a game has an older ANR FG than the selected package and updates it in one click.
 
 ## Usage
 
-1. Download `Decky.ANR.zip` from [Releases](../../releases) and install it from Decky's developer settings
+1. Download `Decky.FrameGen.Hub.zip` from [Releases](../../releases) and install it from Decky's developer settings
    (*Install plugin from ZIP*), or: from Decky's developer settings (*Install plugin from ZIP*).
 2. Open the plugin, choose a game, press **Install ANR FG**.
 3. Launch the game, enable **DLSS Frame Generation** in its settings: ANR FG generates the frames.
@@ -110,7 +114,7 @@ Notes:
 ```sh
 npm install
 npm run build
-./package.sh        # writes out/Decky ANR.zip (downloads the ANR FG release into bin/ if missing)
+./package.sh        # writes out/Decky FrameGen Hub.zip (downloads the ANR FG release into bin/ if missing)
 ```
 
 ## Licenses

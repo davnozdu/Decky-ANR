@@ -1,11 +1,11 @@
 {
-  "name": "Decky ANR",
+  "name": "Decky FrameGen Hub",
   "author": "davnozdu",
   "flags": [],
   "api_version": 1,
   "publish": {
-    "tags": ["framegen", "ANR", "OptiScaler", "DLSS-G"],
-    "description": "Installs and manages ANR FG (Apex Neural Rendering frame generation) with OptiScaler in Proton games.",
+    "tags": ["framegen", "ANR", "XeFG", "OptiScaler", "DLSS-G"],
+    "description": "Choose a frame generator per game (ANR FG or XeFG), with OptiScaler upscalers and per-game profiles, for Proton games.",
     "image": ""
   }
 }

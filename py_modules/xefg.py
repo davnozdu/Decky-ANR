@@ -1,4 +1,4 @@
-"""Pinned, optional XeFG provider for Decky ANR. No game files change during download."""
+"""Pinned, optional XeFG provider for Decky FrameGen Hub. No game files change during download."""
 from __future__ import annotations
 
 import asyncio
