@@ -141,6 +141,7 @@ export type UpscalerInfo = Result & {
   choice?: string;
   watermark?: boolean;
   rdna4?: boolean;
+  fsr4_lite_available?: boolean;
   fsr4_source?: { path: string; version: string; own_prefix: boolean; source?: string } | null;
   gpu_family?: "rdna2" | "rdna3" | "rdna4" | "unknown";
   proton_experimental?: boolean;
@@ -181,3 +182,9 @@ export const setGeneratorMode = callable<
   Result
 >("set_generator_mode");
 export const refreshFsr4Dlls = callable<[], Result>("refresh_fsr4_dlls");
+
+export type Fsr4Library = Result & { available?: boolean; version?: string | null; home?: string };
+export const getFsr4Library = callable<[], Fsr4Library>("get_fsr4_library");
+export const importFsr4Libraries = callable<[archive: string], Result & { version?: string }>("import_fsr4_libraries");
+export const extractFsr4Driver = callable<[driver: string], Result>("extract_fsr4_driver");
+export const importFsr4Folder = callable<[folder: string], Result>("import_fsr4_folder");

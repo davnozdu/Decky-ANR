@@ -1,4 +1,4 @@
-import { addEventListener, definePlugin, removeEventListener, toaster } from "@decky/api";
+import { addEventListener, definePlugin, openFilePicker, FileSelectionType, removeEventListener, toaster } from "@decky/api";
 import {
   ButtonItem,
   DropdownItem,
@@ -46,6 +46,11 @@ import {
   getLsfgStatus,
   installLsfg,
   refreshFsr4Dlls,
+  getFsr4Library,
+  importFsr4Libraries,
+  extractFsr4Driver,
+  importFsr4Folder,
+  Fsr4Library,
   LsfgProfile,
   LsfgStatus,
   unpatchGame,
@@ -809,7 +814,9 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                     <DropdownItem
                       label="Upscaler"
                       description={
-                        upscaler.choice === "fsr4"
+                        upscaler.choice === "fsr4lite"
+                          ? "INT8 Lite from your imported libraries. Enable the watermark to verify FSR4L-i8 after launch."
+                          : upscaler.choice === "fsr4"
                           ? `FSR 4 ${upscaler.rdna4 ? "FP8" : "INT8"} model${
                               upscaler.fsr4_source
                                 ? `, AMD FidelityFX ${upscaler.fsr4_source.version} from ${upscaler.fsr4_source.source || "Proton"}`
@@ -823,7 +830,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       rgOptions={upscaler.options.map((o) => ({
                         data: o.value,
                         label:
-                          o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs Proton Experimental)`
+                          o.value === "fsr4lite" && !upscaler.fsr4_lite_available ? `${o.label} (import ZIP first)`
+                          : o.value === "fsr4" && !upscaler.fsr4_source ? `${o.label} (needs Proton Experimental)`
                           : o.value === "fsr4" && upscaler.gpu_family === "rdna2" ? `${o.label} · slow on this GPU`
                           : o.label,
                       }))}
@@ -874,7 +882,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                       </PanelSectionRow>
                     </>
                   )}
-                  {upscaler.choice === "fsr4" && (
+                  {["fsr4", "fsr4lite"].includes(upscaler.choice || "") && (
                     <PanelSectionRow>
                       <ToggleField
                         label="Show the FSR watermark"
@@ -1365,7 +1373,57 @@ function LegacyBanner() {
   );
 }
 
+function Fsr4Libraries({ onImported }: { onImported: () => void }) {
+  const [library, setLibrary] = useState<Fsr4Library | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setLibrary(await getFsr4Library()); } catch (e) { toast(errorText(e)); }
+  }, []);
+  useEffect(() => void load(), [load]);
+  const importFiles = async (kind: "driver" | "zip" | "folder") => {
+    let path: string;
+    try {
+      const file = await openFilePicker(kind === "folder" ? FileSelectionType.FOLDER : FileSelectionType.FILE,
+        library?.home || "/home", kind !== "folder", true, undefined,
+        kind === "folder" ? undefined : [kind === "driver" ? "exe" : "zip"], false, false);
+      path = file.realpath || file.path;
+    } catch { return; }
+    setBusy(true);
+    try {
+      const result = await (kind === "driver" ? extractFsr4Driver(path)
+        : kind === "folder" ? importFsr4Folder(path) : importFsr4Libraries(path));
+      toast(result.message || result.status);
+      if (result.status === "success") { await load(); onImported(); }
+    } catch (e) { toast(errorText(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <PanelSection title="FSR 4 libraries">
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("driver")}
+          description={library?.available
+            ? `Imported AMD library ${library.version}. Select a newer driver to update. Closed games using Lite update automatically.`
+            : "Download an AMD Windows driver with FSR 4 Lite, then select its .exe here. Extracts and imports the libraries without installing the driver. Internet is needed only if portable 7-Zip is missing."}>
+          {busy ? "Processing libraries… please wait" : "Extract FSR 4 libraries from driver (.exe)"}
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("zip")}
+          description="Already extracted? Choose a ZIP containing amdxcffx64.dll and amdvkffx64.dll. For a new game, choose FSR 4 Lite in Upscaler after importing.">
+          Import libraries from ZIP
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("folder")}>
+          Import a folder with both DLLs
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+}
+
 function Content() {
+  const [fsrRevision, setFsrRevision] = useState(0);
   const [info, setInfo] = useState<AnrInfo | null>(null);
   const reload = useCallback(async () => {
     try {
@@ -1380,7 +1438,8 @@ function Content() {
     <>
       <LegacyBanner />
       <PackageSection info={info} reload={reload} />
-      <GameSection info={info} />
+      <Fsr4Libraries onImported={() => setFsrRevision((v) => v + 1)} />
+      <GameSection key={fsrRevision} info={info} />
       <BenchmarkSection />
       <HelpSection />
     </>

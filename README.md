@@ -38,6 +38,37 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## FSR 4 Lite: bring your own AMD libraries (0.2.2)
+
+The plugin release contains **no AMD driver DLLs**. Download an official AMD Windows graphics driver yourself,
+then use **FSR 4 libraries → Extract FSR 4 libraries from driver (.exe)**. The plugin extracts only
+`amdxcffx64.dll` and `amdvkffx64.dll`, checks x64 PE headers, AMD/FidelityFX metadata, matching versions and Lite
+model markers, then stores them in Decky's persistent plugin data. These metadata checks do not verify a
+cryptographic publisher signature. The driver installer is never executed and no system driver is installed.
+On SteamOS/Linux, a missing 7-Zip is downloaded as a portable tool from its official release, checked against a
+pinned SHA-256, and kept in plugin data; no sudo or writable system partition is needed.
+
+Alternatively, **Import libraries from ZIP** accepts both DLLs together (nested folders are fine), or
+**Import a folder with both DLLs** accepts files you extracted manually. Mixed versions, duplicate DLLs,
+unsafe ZIP paths and files without Lite markers are rejected. Importing a newer pair uses the same buttons;
+there is no fixed DLL hash/version whitelist. Your library survives plugin updates.
+
+After importing, choose a game → **Upscaler → FSR 4 Lite (INT8)**. Games already using Lite update automatically
+when closed; running games are skipped until closed and Lite is selected again. Existing frame generator,
+quality and sharpening choices are preserved. Only unchanged plugin-managed DLLs are replaced/removed.
+A new game's upscaler is not switched automatically.
+
+The watermark is **off by default**. Enable **Show the FSR watermark** temporarily to verify
+**`FSR4L-i8 Upscale 4.1.2`** (or the version you imported); an FSR 4 label alone is not proof of Lite.
+Tested on ROG Xbox Ally X / CachyOS / proton-cachyos 11 / Forza Horizon 6: driver library 2.4.0.4370,
+Lite watermark confirmed in actual gameplay, Balanced 1129×635 → 1920×1080, ~3 ms upscaler time in one sample.
+Steam Deck and other games: unverified; this is not an FPS guarantee.
+
+For standalone extraction, download **FSR4-Extractor.zip** from this release. See
+[FSR4-EXTRACTION.md](FSR4-EXTRACTION.md) for a one-command SteamOS workflow and Windows/macOS notes.
+Download source: [AMD Adrenalin 26.10.1](https://www.amd.com/en/resources/support-articles/release-notes/rn-rad-win-26-10-1.html)
+(or a newer driver that contains Lite). The extracted files retain AMD's terms; users supply them locally.
+
 ## Beta: alternative XeFG frame generator
 
 Version **0.2.0-beta.1** adds a per-game **Frame generator** selector: ANR FG or
@@ -162,7 +193,7 @@ Notes:
 ```sh
 npm install
 npm run build
-./package.sh        # writes out/Decky FrameGen Hub.zip (downloads the ANR FG release into bin/ if missing)
+./package.sh        # writes out/Decky.FrameGen.Hub.zip and out/FSR4-Extractor.zip; no AMD driver DLLs
 ```
 
 ## Licenses

@@ -16,6 +16,7 @@ import shutil
 import ssl
 import subprocess
 import time
+import tempfile
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ import decky
 
 from xefg import GeneratorMixin, XEFG_LOG, XEFG_BUILD
 from lsfg import LsfgMixin
+from fsr4 import Fsr4Mixin
 
 GITHUB_REPO = "apex-compute/ANR"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -81,7 +83,7 @@ def _plugin_version_key(version: str) -> tuple:
     return (_version_key(base), not bool(prerelease), _version_key(prerelease))
 
 
-class Plugin(GeneratorMixin, LsfgMixin):
+class Plugin(GeneratorMixin, LsfgMixin, Fsr4Mixin):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def _main(self):
@@ -1380,6 +1382,7 @@ class Plugin(GeneratorMixin, LsfgMixin):
         "package": "As in the ANR package",
         "fsr31": "FSR 3.1",
         "fsr4": "FSR 4 (ML)",
+        "fsr4lite": "FSR 4 Lite (INT8)",
         "xess": "XeSS",
     }
     # OptiScaler [UpscaleRatio]: output size divided by render size, per axis.
@@ -1596,11 +1599,64 @@ class Plugin(GeneratorMixin, LsfgMixin):
             return {("Upscalers", "Dx12Upscaler"): "xess", ("FSR", "Fsr4EnableWatermark"): "auto"}
         return {}
 
+    def _apply_fsr4_lite(self, appid: str, ini: Path, watermark: bool) -> dict:
+        src = self._local_fsr4_source()
+        if not src:
+            return {"status": "error", "message": "Import a ZIP with both FSR 4 Lite DLLs in FSR 4 libraries first."}
+        state = self._load_state()
+        entry = state["games"].setdefault(appid, {})
+        managed = entry.setdefault("managed_files", [])
+        folder = self._optiscaler_main_dir(ini)
+        # Validate every destination before copying either DLL. Never claim user-owned files.
+        for name, expected in src["hashes"].items():
+            dest = folder / name
+            record = next((m for m in managed if m.get("path") == str(dest)), None)
+            if dest.exists() and (not record or self._file_sha256(dest) != record.get("sha256")):
+                return {"status": "error", "message": f"{name} is not managed or was modified; keep a backup and remove it before selecting Lite."}
+        # Stage both files before replacing either, and roll back a partial replacement.
+        with tempfile.TemporaryDirectory(prefix=".fsr4-", dir=folder) as temp:
+            stage = Path(temp)
+            for name, expected in src["hashes"].items():
+                shutil.copy2(Path(src["path"]).parent / name, stage / name)
+                if self._file_sha256(stage / name) != expected:
+                    raise ValueError("Imported library changed during copy")
+                if (folder / name).exists():
+                    shutil.copy2(folder / name, stage / (name + ".backup"))
+            replaced = []
+            try:
+                for name in src["hashes"]:
+                    os.replace(stage / name, folder / name)
+                    replaced.append(name)
+            except Exception:
+                for name in reversed(replaced):
+                    backup = stage / (name + ".backup")
+                    if backup.exists():
+                        os.replace(backup, folder / name)
+                    else:
+                        (folder / name).unlink()
+                raise
+        for name, expected in src["hashes"].items():
+            dest = folder / name
+            managed[:] = [m for m in managed if m.get("path") != str(dest)]
+            managed.append({"path": str(dest), "sha256": expected})
+        self._set_ini_sections(ini, {
+            ("Upscalers", "Dx12Upscaler"): "ffx",
+            ("FSR", "UpscalerIndex"): "0",
+            ("FSR", "Fsr4GpuSupport"): "4", ("FSR", "Fsr4Model"): "3",
+            ("FSR", "Fsr4EnableWatermark"): "true" if watermark else "false",
+            ("Log", "LogLevel"): "2", ("Log", "LogToFile"): "true",
+        })
+        entry.update(upscaler="fsr4lite", upscaler_watermark=bool(watermark))
+        self._save_state(state)
+        return {"status": "success", "message": "FSR 4 INT8 Lite selected from your imported libraries. Restart the game."}
+
     def _apply_upscaler(self, appid: str, target: Path, choice: str, watermark: bool) -> dict:
         desc = self._describe_dir(target)
         ini = self._optiscaler_ini(target, desc)
         if not ini or not ini.exists():
             return {"status": "error", "message": "OptiScaler.ini not found for this game."}
+        if choice == "fsr4lite":
+            return self._apply_fsr4_lite(appid, ini, watermark)
         state = self._load_state()
         entry = state["games"].setdefault(appid, {})
         managed = entry.get("managed_files", [])
@@ -1619,9 +1675,16 @@ class Plugin(GeneratorMixin, LsfgMixin):
                 return {"status": "error", "message": f"{dll_dest.name} in the game folder is not AMD's; not replaced."}
             if not existing or _version_key(existing["version"]) < _version_key(src["version"]):
                 shutil.copy2(src["path"], dll_dest)
-            if not ours:
-                managed.append({"path": str(dll_dest), "sha256": self._file_sha256(dll_dest)})
+            if ours:
+                managed = [m for m in managed if m.get("path") != str(dll_dest)]
+            managed.append({"path": str(dll_dest), "sha256": self._file_sha256(dll_dest)})
             note = f" (AMD FidelityFX {src['version']} from {src.get('source', 'Proton')})"
+            # Remove a managed Vulkan Lite provider when switching back to standard FSR 4.
+            for m in list(managed):
+                p = Path(m.get("path", ""))
+                if p.name == "amdvkffx64.dll" and p.exists() and self._file_sha256(p) == m.get("sha256"):
+                    p.unlink()
+                    managed.remove(m)
             if self._gpu_family() == "rdna2":
                 note += (". This GPU (RDNA 2, e.g. Steam Deck) has no INT8 matrix units: FSR 4 runs, but costs "
                          "several ms a frame; FSR 3.1 is usually the better choice here")
@@ -1630,7 +1693,7 @@ class Plugin(GeneratorMixin, LsfgMixin):
             keep = []
             for m in managed:
                 p = Path(m.get("path", ""))
-                if p.name == self.FSR4_DLL and p.exists() and self._file_sha256(p) == m.get("sha256"):
+                if p.name in self.FSR4_DLL_NAMES and p.exists() and self._file_sha256(p) == m.get("sha256"):
                     p.unlink()
                 elif p.exists():
                     keep.append(m)
@@ -1660,7 +1723,10 @@ class Plugin(GeneratorMixin, LsfgMixin):
             target = self._resolve_target(game, self._load_state()["games"].get(str(appid)))
             if not target:
                 return {"status": "error", "message": "ANR FG is not installed in this game."}
-            return await asyncio.to_thread(self._apply_upscaler, str(appid), target, choice, bool(watermark))
+            async with self._generator_lock():
+                if self._is_running(game):
+                    return {"status": "error", "message": "Close the game first."}
+                return await asyncio.to_thread(self._apply_upscaler, str(appid), target, choice, bool(watermark))
         except Exception as exc:
             decky.logger.error(f"[ANR] set_upscaler {appid}: {exc}")
             return {"status": "error", "message": str(exc)}
@@ -1669,14 +1735,14 @@ class Plugin(GeneratorMixin, LsfgMixin):
         try:
             done = []
             for appid, entry in self._load_state().get("games", {}).items():
-                if entry.get("upscaler") != "fsr4":
+                if entry.get("upscaler") not in ("fsr4", "fsr4lite"):
                     continue
                 game = self._game(appid)
                 if not game or self._is_running(game):
                     continue
                 target = self._resolve_target(game, entry)
                 if target:
-                    r = await asyncio.to_thread(self._apply_upscaler, appid, target, "fsr4",
+                    r = await asyncio.to_thread(self._apply_upscaler, appid, target, entry["upscaler"],
                                                 bool(entry.get("upscaler_watermark")))
                     if r.get("status") == "success":
                         done.append(entry.get("name", appid))
@@ -1739,6 +1805,9 @@ class Plugin(GeneratorMixin, LsfgMixin):
         try:
             entry = self._load_state()["games"].get(str(appid), {})
             src = await asyncio.to_thread(self._find_fsr4_dll, str(appid))
+            lite_src = await asyncio.to_thread(self._local_fsr4_source)
+            if entry.get("upscaler") == "fsr4lite":
+                src = lite_src
             out = await asyncio.to_thread(self._output_size, str(appid))
             return {"status": "success", "choice": entry.get("upscaler", "package"),
                     "render_quality": entry.get("render_quality", "game"),
@@ -1746,7 +1815,7 @@ class Plugin(GeneratorMixin, LsfgMixin):
                                        for k, v in self.RENDER_QUALITY.items()],
                     "output": list(out) if out else None,
                     "watermark": bool(entry.get("upscaler_watermark")),
-                    "fsr4_source": src, "rdna4": self._gpu_is_rdna4(), "gpu_family": self._gpu_family(),
+                    "fsr4_lite_available": bool(lite_src), "fsr4_source": src, "rdna4": self._gpu_is_rdna4(), "gpu_family": self._gpu_family(),
                     "proton_experimental": self._proton_experimental_installed(),
                     "options": [{"value": k, "label": v} for k, v in self.UPSCALERS.items()]}
         except Exception as exc:
