@@ -42,7 +42,12 @@ import {
   readGameLog,
   setActiveVersion,
   setGameSetting,
-  setFrameGenerator,
+  setGeneratorMode,
+  getLsfgStatus,
+  installLsfg,
+  refreshFsr4Dlls,
+  LsfgProfile,
+  LsfgStatus,
   unpatchGame,
   updateAllGames,
   updateFromGithub,
@@ -93,6 +98,11 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
   }, []);
 
   useEffect(() => void loadUpdates(false), [loadUpdates, info?.version]);
+  const [lsfg, setLsfg] = useState<LsfgStatus | null>(null);
+  const loadLsfg = useCallback(async () => {
+    try { setLsfg(await getLsfgStatus("")); } catch { setLsfg(null); }
+  }, []);
+  useEffect(() => void loadLsfg(), [loadLsfg]);
 
   const run = async (label: string, fn: () => Promise<{ status: string; message?: string }>) => {
     setBusy(label);
@@ -139,6 +149,30 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={updatePlugin}>
               Update the plugin to {updates.plugin_latest}
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
+
+      {updates?.xefg_update && (
+        <PanelSectionRow>
+          <div style={banner("rgba(88,166,255,0.12)")}>
+            <b>XeFG {updates.xefg_latest}</b> is out (the plugin has {updates.xefg_current}). XeFG builds are checked
+            and pinned per plugin release: it arrives with the next plugin update.
+          </div>
+        </PanelSectionRow>
+      )}
+
+      {updates?.fsr4_update_games && updates.fsr4_update_games.length > 0 && (
+        <>
+          <PanelSectionRow>
+            <div style={banner("rgba(255,216,102,0.12)")}>
+              Proton has a newer FSR 4 DLL ({updates.fsr4_latest}) than {updates.fsr4_update_games.join(", ")}.
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy !== null} onClick={() => run("fsr4", refreshFsr4Dlls)}>
+              Update the FSR 4 DLL in these games
             </ButtonItem>
           </PanelSectionRow>
         </>
@@ -191,6 +225,31 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         </>
       )}
 
+      <PanelSectionRow>
+        <Field label="Lossless Scaling (lsfg-vk)" focusable>
+          {lsfg === null ? "…" : lsfg.installed ? lsfg.version : "not installed"}
+        </Field>
+      </PanelSectionRow>
+      {lsfg && lsfg.installed && lsfg.dll_state !== "ok" && (
+        <PanelSectionRow>
+          <div style={{ ...small, color: "#ffd866" }}>
+            {lsfg.dll_state === "wrong_branch"
+              ? "Lossless Scaling is on its default branch, which lacks what lsfg-vk 2 needs. In Steam: Lossless Scaling → Properties → Betas → lsfg-vk."
+              : "lsfg-vk needs your Lossless Scaling: install it from Steam and pick the beta branch \"lsfg-vk\" (Properties → Betas)."}
+            {" "}The plugin uses it where Steam installs it; nothing is copied.
+          </div>
+        </PanelSectionRow>
+      )}
+      {(!lsfg?.installed || updates?.lsfg_update) && (
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={busy !== null}
+            onClick={async () => { await run("lsfg", installLsfg); await loadLsfg(); }}>
+            {busy === "lsfg" ? "Installing lsfg-vk…"
+              : lsfg?.installed ? `Update lsfg-vk to ${updates?.lsfg_latest}` : "Install lsfg-vk (frame generation for any game)"}
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+
       {info?.versions && info.versions.length > 1 && (
         <PanelSectionRow>
           <DropdownItem
@@ -225,6 +284,39 @@ function PackageSection({ info, reload }: { info: AnrInfo | null; reload: () => 
         </PanelSectionRow>
       )}
     </PanelSection>
+  );
+}
+
+// ─── Lossless Scaling (lsfg-vk) per-game controls ───────────────────────────
+
+function LsfgControls({ profile, busy, onChange }: {
+  profile: LsfgProfile | null; busy: boolean; onChange: (p: Partial<LsfgProfile>) => void;
+}) {
+  const m = profile?.multiplier ?? 2;
+  const flow = Math.round((profile?.flow_scale ?? 1.0) * 100);
+  return (
+    <>
+      <PanelSectionRow>
+        <SliderField label="Lossless multiplier" description={`${m}X: ${m - 1} generated frame(s) per real frame.`}
+          value={m} min={2} max={4} step={1} showValue notchTicksVisible disabled={busy}
+          onChange={(v: number) => onChange({ multiplier: v })} />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <SliderField label="Flow scale" description="Lower = faster, softer motion estimation (recommended 50–75% on handhelds)."
+          value={flow} min={25} max={100} step={5} showValue valueSuffix="%" disabled={busy}
+          onChange={(v: number) => onChange({ flow_scale: v / 100 })} />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField label="Performance mode" description="Lighter model: cheaper on the GPU, a little less accurate."
+          checked={Boolean(profile?.performance_mode)} disabled={busy}
+          onChange={(on: boolean) => onChange({ performance_mode: on })} />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <div style={small}>
+          Turn the game's own frame generation off. Applies at the game's next start{profile?.active_in?.length ? ` (${profile.active_in.join(", ")})` : ""}.
+        </div>
+      </PanelSectionRow>
+    </>
   );
 }
 
@@ -343,12 +435,13 @@ function GameSection({ info }: { info: AnrInfo | null }) {
     }
   };
 
-  const changeGenerator = async (choice: string) => {
+  const changeGenerator = async (choice: string, lsfg?: Partial<LsfgProfile>) => {
     setBusy("generator");
     setLog("");
     setPerf(null);
+    const cur = { ...(status?.lsfg || { multiplier: 2, flow_scale: 1.0, performance_mode: false }), ...(lsfg || {}) };
     try {
-      const r = await setFrameGenerator(appid, choice);
+      const r = await setGeneratorMode(appid, choice, cur.multiplier ?? 2, cur.flow_scale ?? 1.0, Boolean(cur.performance_mode));
       toast(r.message || r.status);
     } catch (e) {
       toast(errorText(e));
@@ -460,7 +553,13 @@ function GameSection({ info }: { info: AnrInfo | null }) {
 
   const patched = Boolean(status?.patched);
   const isXefg = status?.generator?.choice === "xefg";
-  const generatorLabel = isXefg ? "XeFG XMX Port · Build 10 beta" : status?.generator?.choice === "custom" ? status.generator.provider : "ANR FG";
+  const genChoice = status?.generator?.choice || "anr";
+  const generatorLabel =
+    genChoice === "xefg" ? "XeFG XMX Port · Build 10 beta"
+    : genChoice === "lsfg" ? "Lossless Scaling (lsfg-vk)"
+    : genChoice === "off" ? "No frame generation"
+    : genChoice === "custom" ? status?.generator?.provider || "custom"
+    : "ANR FG";
   const proxyBase = (status?.proxy || "dxgi.dll").replace(/\.dll$/i, "");
   const anrLaunchLine = `WINEDLLOVERRIDES="${proxyBase}=n,b" %command%`;
   const launchHasOverride = launchOptions.includes(`${proxyBase}=n,b`);
@@ -543,6 +642,24 @@ function GameSection({ info }: { info: AnrInfo | null }) {
             <PanelSectionRow>
               <div style={small}>Folder: {status.target_rel}</div>
             </PanelSectionRow>
+          )}
+
+          {!patched && status?.installed !== false && (
+            <>
+              <PanelSectionRow>
+                <ToggleField
+                  label="Lossless Scaling frame generation"
+                  description="lsfg-vk works in any game, also without DLSS Frame Generation. Needs your Lossless Scaling (Steam, branch lsfg-vk)."
+                  checked={Boolean(status?.lsfg)}
+                  disabled={busy !== null || Boolean(status?.running)}
+                  onChange={(on: boolean) => void changeGenerator(on ? "lsfg" : "off")}
+                />
+              </PanelSectionRow>
+              {status?.lsfg && (
+                <LsfgControls profile={status.lsfg} busy={busy !== null || Boolean(status?.running)}
+                  onChange={(p) => void changeGenerator("lsfg", p)} />
+              )}
+            </>
           )}
 
           {!patched && status?.conflict && (
@@ -665,6 +782,8 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   rgOptions={[
                     { data: "anr", label: "ANR FG" },
                     ...(status?.generator?.available !== false ? [{ data: "xefg", label: "XeFG XMX Port · Build 10 (beta)" }] : []),
+                    { data: "lsfg", label: "Lossless Scaling (lsfg-vk)" },
+                    { data: "off", label: "Off" },
                     ...(status?.generator?.choice === "custom" ? [{ data: "custom", label: status.generator.provider }] : []),
                   ]}
                   onChange={(o) => { if (o.data !== "custom") void changeGenerator(String(o.data)); }}
@@ -677,6 +796,10 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                     the frame multiplier and upscaler still apply.
                   </div>
                 </PanelSectionRow>
+              )}
+              {genChoice === "lsfg" && (
+                <LsfgControls profile={status?.lsfg || null} busy={busy !== null || Boolean(status?.running)}
+                  onChange={(p) => void changeGenerator("lsfg", p)} />
               )}
               {upscaler?.options && (
                 <>
@@ -856,7 +979,7 @@ function GameSection({ info }: { info: AnrInfo | null }) {
                   Reset the profile
                 </ButtonItem>
               </PanelSectionRow>
-              {!isXefg && status?.generator?.choice !== "custom" && (<>
+              {genChoice === "anr" && (<>
               <PanelSectionRow>
                 <SliderField
                   label="Generated frames"
@@ -1241,11 +1364,14 @@ function Content() {
 export default definePlugin(() => {
   // The backend checks GitHub at start and every 6 hours and emits this once per new version.
   const onUpdate = (kind: string, version: string) => {
-    toast(
-      kind === "plugin"
-        ? `${TITLE} ${version} is out: open the plugin to update.`
-        : `ANR FG ${version} is out: open ${TITLE} to download it.`
-    );
+    const what: Record<string, string> = {
+      plugin: `${TITLE} ${version} is out: open the plugin to update.`,
+      anr: `ANR FG ${version} is out: open ${TITLE} to download it.`,
+      lsfg: `lsfg-vk ${version} is out: open ${TITLE} to update it.`,
+      xefg: `XeFG ${version} is out: it comes with the next ${TITLE} update.`,
+      fsr4: `A newer FSR 4 DLL (${version}) is available: open ${TITLE} to update your games.`,
+    };
+    toast(what[kind] || `${kind} ${version} is out.`);
   };
   const listener = addEventListener<[string, string]>("anr_update_available", onUpdate);
   return {

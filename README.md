@@ -38,6 +38,28 @@ managed XeFG files in add-on installs, preserving changed files and logs.
 Sources: [XeFG Build 10](https://github.com/realdody/dlssg-to-xefg-xmx/releases/tag/build-10),
 [Intel XeSS SDK](https://github.com/intel/xess/releases/tag/v3.0.2). Third-party notices: `licenses/`.
 
+## Lossless Scaling (lsfg-vk)
+
+A third generator for **any** game, also without DLSS Frame Generation: [lsfg-vk](https://lsfg-vk.dev) 2.x,
+the Linux layer for Lossless Scaling's frame generation.
+
+- You need your own **Lossless Scaling** (Steam app 993090) on the **lsfg-vk** beta branch (Properties → Betas): that
+  branch has `lsfg-vk.dll`; the default branch's `Lossless.dll` lacks what lsfg-vk 2 needs. The plugin uses it where
+  Steam installs it and never copies or uploads it.
+- **Install lsfg-vk** downloads the official build from builds.lsfg-vk.dev into `~/.local` (as its install guide
+  does; lsfg-vk is CC BY-NC-ND 4.0 and is not bundled). Updates are offered when a new release is out.
+- Per game: **Frame generator → Lossless Scaling** (or the toggle for games without ANR), multiplier 2X–4X,
+  flow scale, performance mode. The plugin keeps its own `[[profile]]` entries in `~/.config/lsfg-vk/conf.toml`
+  between markers, leaves yours alone and checks the file with `lsfg-vk-cli validate`.
+- Turn the game's own frame generation off. With ANR installed, choosing Lossless Scaling turns OptiScaler's frame
+  generation off for that game.
+
+## Updates
+
+The plugin checks at start and every 6 hours and shows a Steam notification once per new version of: the plugin
+(betas see newer betas), ANR FG, lsfg-vk, a newer FSR 4 DLL from Proton, and new XeFG builds (those arrive with a plugin
+update, as each build is pinned and SHA-256 checked).
+
 ## Features
 
 - Bundled ANR FG package (`anr-fg-<version>-full.zip`, includes Apex's OptiScaler build), plus a

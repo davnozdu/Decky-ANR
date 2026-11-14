@@ -150,11 +150,17 @@ class GeneratorMixin:
         raw = self._read_ini_sections(ini)
         provider = raw.get(("FrameGen", "FGNvngxReplacement"), "")
         choice = "xefg" if provider == XEFG_NAME else "anr" if provider in ("Apex Neural Rendering FG", "nrfg") else "custom"
+        if raw.get(("FrameGen", "FGInput"), "").lower() == "nofg":
+            choice = "off"  # set_generator_mode refines this to "lsfg" from the plugin state
         return {"choice": choice, "provider": provider, "build": XEFG_BUILD,
                 "ready": self._xefg_valid(self._xefg_dest(ini)),
                 "dx12_only": True, "available": proxy != "winmm.dll"}
 
     def _apply_generator(self, appid: str, choice: str, source: Path | None = None) -> None:
+        if choice in ("lsfg", "off"):
+            _, _, ini = self._target_and_ini(appid)
+            self._set_ini_sections(ini, {("FrameGen", "FGInput"): "nofg"})
+            return
         if choice not in ("anr", "xefg"):
             raise ValueError("Unknown frame generator")
         target, desc, ini = self._target_and_ini(appid)

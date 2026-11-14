@@ -23,7 +23,8 @@ from pathlib import Path
 
 import decky
 
-from xefg import GeneratorMixin, XEFG_LOG
+from xefg import GeneratorMixin, XEFG_LOG, XEFG_BUILD
+from lsfg import LsfgMixin
 
 GITHUB_REPO = "apex-compute/ANR"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -80,7 +81,7 @@ def _plugin_version_key(version: str) -> tuple:
     return (_version_key(base), not bool(prerelease), _version_key(prerelease))
 
 
-class Plugin(GeneratorMixin):
+class Plugin(GeneratorMixin, LsfgMixin):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def _main(self):
@@ -176,7 +177,14 @@ class Plugin(GeneratorMixin):
         except Exception as exc:
             info["errors"].append(f"ANR FG: {exc}")
         try:
-            release = json.loads(self._http_get(PLUGIN_API_LATEST, "application/vnd.github+json"))
+            if "-" in self._plugin_version():
+                # On a beta: newer betas count as updates too (releases/latest skips pre-releases).
+                releases = json.loads(self._http_get(
+                    f"https://api.github.com/repos/{PLUGIN_REPO}/releases?per_page=15", "application/vnd.github+json"))
+                releases = [r for r in releases if not r.get("draft")]
+                release = max(releases, key=lambda r: _plugin_version_key(str(r.get("tag_name") or "0")))
+            else:
+                release = json.loads(self._http_get(PLUGIN_API_LATEST, "application/vnd.github+json"))
             tag = str(release.get("tag_name") or "").lstrip("vV")
             assets = release.get("assets", [])
             asset = next((a for a in assets if a.get("name") == PLUGIN_ASSET), None) or next(
@@ -191,6 +199,41 @@ class Plugin(GeneratorMixin):
             info["plugin_notes_url"] = release.get("html_url")
         except Exception as exc:
             info["errors"].append(f"plugin: {exc}")
+        # XeFG port: builds are pinned and SHA-256 checked per plugin release, so a new build arrives with a
+        # plugin update; here we only tell the user that one exists.
+        try:
+            rel = json.loads(self._http_get("https://api.github.com/repos/realdody/dlssg-to-xefg-xmx/releases/latest",
+                                            "application/vnd.github+json"))
+            tag = str(rel.get("tag_name") or "")
+            info["xefg_current"] = XEFG_BUILD
+            info["xefg_latest"] = tag or None
+            info["xefg_update"] = bool(tag) and _version_key(tag) > _version_key(XEFG_BUILD)
+        except Exception as exc:
+            info["errors"].append(f"XeFG: {exc}")
+        # lsfg-vk: updated in place from builds.lsfg-vk.dev when installed
+        try:
+            rec = self._lsfg_installed()
+            latest = self._lsfg_latest()
+            info["lsfg_current"] = (rec or {}).get("version")
+            info["lsfg_latest"] = latest[0] if latest else None
+            info["lsfg_update"] = bool(rec and latest) and _version_key(latest[0]) > _version_key(rec["version"])
+        except Exception as exc:
+            info["errors"].append(f"lsfg-vk: {exc}")
+        # FSR 4: Proton may bring a newer amdxcffx64.dll than the copies in game folders
+        try:
+            src = self._find_fsr4_dll(None)
+            older = []
+            for appid, entry in self._load_state().get("games", {}).items():
+                for m in entry.get("managed_files", []):
+                    p = Path(m.get("path", ""))
+                    if p.name == self.FSR4_DLL and p.exists():
+                        cur = self._fsr4_dll_info(p)
+                        if src and cur and _version_key(src["version"]) > _version_key(cur["version"]):
+                            older.append(entry.get("name", appid))
+            info["fsr4_latest"] = src["version"] if src else None
+            info["fsr4_update_games"] = older
+        except Exception as exc:
+            info["errors"].append(f"FSR 4: {exc}")
         state = self._load_state()
         state["updates"] = info
         self._save_state(state)
@@ -211,6 +254,15 @@ class Plugin(GeneratorMixin):
                 if info.get("plugin_update") and notified.get("plugin") != info.get("plugin_latest"):
                     await decky.emit("anr_update_available", "plugin", info.get("plugin_latest"))
                     notified["plugin"] = info.get("plugin_latest")
+                    changed = True
+                for kind, flag, ver in (("lsfg", "lsfg_update", "lsfg_latest"), ("xefg", "xefg_update", "xefg_latest")):
+                    if info.get(flag) and notified.get(kind) != info.get(ver):
+                        await decky.emit("anr_update_available", kind, info.get(ver))
+                        notified[kind] = info.get(ver)
+                        changed = True
+                if info.get("fsr4_update_games") and notified.get("fsr4") != info.get("fsr4_latest"):
+                    await decky.emit("anr_update_available", "fsr4", info.get("fsr4_latest"))
+                    notified["fsr4"] = info.get("fsr4_latest")
                     changed = True
                 if changed:
                     self._save_state(state)
@@ -910,6 +962,7 @@ class Plugin(GeneratorMixin):
                 "patched": False, "candidates": candidates,
                 "suggested_dir": candidates[0]["dir"] if candidates else str(root),
                 "conflict": self._conflict_message(Path(candidates[0]["dir"])) if candidates else None,
+                "lsfg": self._lsfg_profiles().get(appid),
                 "running": self._is_running(game),
                 "proton": self._proton_info(game),
             }
@@ -937,13 +990,24 @@ class Plugin(GeneratorMixin):
             "game_version": game_version,
             "active_version": self._active_version(),
             "settings": settings,
-            "generator": self._generator_status(self._optiscaler_ini(target, desc), desc["proxy"]) if self._optiscaler_ini(target, desc) else None,
+            "generator": self._generator_with_state(appid, target, desc),
+            "lsfg": self._lsfg_profiles().get(appid),
             "log_file": log_file,
             "candidates": candidates,
             "suggested_dir": str(target),
             "running": self._is_running(game),
             "proton": self._proton_info(game),
         }
+
+    def _generator_with_state(self, appid: str, target: Path, desc: dict) -> dict | None:
+        ini = self._optiscaler_ini(target, desc)
+        if not ini:
+            return None
+        gen = self._generator_status(ini, desc["proxy"])
+        saved = self._load_state()["games"].get(appid, {}).get("generator")
+        if gen["choice"] == "off" and saved in ("lsfg", "off"):
+            gen["choice"] = saved
+        return gen
 
     def _conflict_message(self, target: Path) -> str | None:
         desc = self._describe_dir(target)
@@ -1524,6 +1588,70 @@ class Plugin(GeneratorMixin):
             return await asyncio.to_thread(self._apply_upscaler, str(appid), target, choice, bool(watermark))
         except Exception as exc:
             decky.logger.error(f"[ANR] set_upscaler {appid}: {exc}")
+            return {"status": "error", "message": str(exc)}
+
+    async def refresh_fsr4_dlls(self) -> dict:
+        try:
+            done = []
+            for appid, entry in self._load_state().get("games", {}).items():
+                if entry.get("upscaler") != "fsr4":
+                    continue
+                game = self._game(appid)
+                if not game or self._is_running(game):
+                    continue
+                target = self._resolve_target(game, entry)
+                if target:
+                    r = await asyncio.to_thread(self._apply_upscaler, appid, target, "fsr4",
+                                                bool(entry.get("upscaler_watermark")))
+                    if r.get("status") == "success":
+                        done.append(entry.get("name", appid))
+            return {"status": "success", "message": f"FSR 4 DLL refreshed: {', '.join(done) or 'no closed games to update'}."}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    # ── Frame generator incl. Lossless Scaling (lsfg-vk) ──────────────────────
+
+    async def set_generator_mode(self, appid: str, choice: str, multiplier: int = 2, flow_scale: float = 1.0,
+                                 performance_mode: bool = False) -> dict:
+        """anr / xefg run through OptiScaler; lsfg is a Vulkan layer. Only one generates frames at a time."""
+        appid = str(appid)
+        try:
+            game = self._game(appid)
+            if not game:
+                return {"status": "error", "message": "The game is not in the Steam library."}
+            if self._is_running(game):
+                return {"status": "error", "message": "Close the game first."}
+            state = self._load_state()
+            entry = state["games"].get(appid)
+            patched = bool(entry and self._resolve_target(game, entry))
+            if choice == "lsfg":
+                r = await self.set_lsfg_profile(appid, True, multiplier, flow_scale, performance_mode)
+                if r.get("status") != "success":
+                    return r
+                if patched:
+                    _, _, ini = self._target_and_ini(appid)
+                    self._set_ini_sections(ini, {("FrameGen", "FGInput"): "nofg"})
+                    state = self._load_state()
+                    state["games"][appid]["generator"] = "lsfg"
+                    self._save_state(state)
+                return r
+            if choice in ("anr", "xefg"):
+                if not patched:
+                    return {"status": "error", "message": "Install ANR first: ANR FG and XeFG run through its OptiScaler."}
+                await self.set_lsfg_profile(appid, False)
+                return await self.set_frame_generator(appid, choice)
+            if choice == "off":
+                await self.set_lsfg_profile(appid, False)
+                if patched:
+                    _, _, ini = self._target_and_ini(appid)
+                    self._set_ini_sections(ini, {("FrameGen", "FGInput"): "nofg"})
+                    state = self._load_state()
+                    state["games"][appid]["generator"] = "off"
+                    self._save_state(state)
+                return {"status": "success", "message": "Frame generation off for this game."}
+            return {"status": "error", "message": f"Unknown generator {choice}"}
+        except Exception as exc:
+            decky.logger.error(f"[ANR] set_generator_mode {appid} {choice}: {exc}")
             return {"status": "error", "message": str(exc)}
 
     async def get_upscaler(self, appid: str) -> dict:

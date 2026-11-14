@@ -25,7 +25,8 @@ export type GameStatus = Result & {
   target_rel?: string;
   game_version?: string | null;
   active_version?: string | null;
-  generator?: { choice: "anr" | "xefg" | "custom"; provider: string; build: string; ready: boolean; available: boolean };
+  generator?: { choice: "anr" | "xefg" | "lsfg" | "off" | "custom"; provider: string; build: string; ready: boolean; available: boolean };
+  lsfg?: LsfgProfile | null;
   settings?: Record<string, string | null>;
   log_file?: string | null;
   candidates?: Candidate[];
@@ -70,6 +71,14 @@ export type UpdateInfo = Result & {
   plugin_url?: string;
   plugin_hash?: string;
   plugin_notes_url?: string;
+  xefg_current?: string;
+  xefg_latest?: string | null;
+  xefg_update?: boolean;
+  lsfg_current?: string | null;
+  lsfg_latest?: string | null;
+  lsfg_update?: boolean;
+  fsr4_latest?: string | null;
+  fsr4_update_games?: string[];
 };
 
 export const checkUpdates = callable<[force: boolean], UpdateInfo>("check_updates");
@@ -157,3 +166,16 @@ export const resetProfile = callable<[appid: string], Result>("reset_profile");
 export const setFrameGenerator = callable<[appid: string, choice: string], Result>("set_frame_generator");
 
 export const getLegacyInfo = callable<[], Result & { legacy_installed?: boolean; legacy_name?: string }>("get_legacy_info");
+
+export type LsfgProfile = { active_in: string[]; multiplier: number; flow_scale: number; performance_mode: boolean };
+export type LsfgStatus = Result & {
+  installed?: boolean; version?: string | null; dll?: string | null;
+  dll_state?: "ok" | "wrong_branch" | "missing"; profile?: LsfgProfile | null;
+};
+export const getLsfgStatus = callable<[appid: string], LsfgStatus>("get_lsfg_status");
+export const installLsfg = callable<[], Result & { version?: string }>("install_lsfg");
+export const setGeneratorMode = callable<
+  [appid: string, choice: string, multiplier: number, flow_scale: number, performance_mode: boolean],
+  Result
+>("set_generator_mode");
+export const refreshFsr4Dlls = callable<[], Result>("refresh_fsr4_dlls");
