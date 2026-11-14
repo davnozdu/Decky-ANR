@@ -163,34 +163,6 @@ class Fsr4Mixin:
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
-    def _import_fsr4_folder(self, path: str) -> dict:
-        folder = Path(path).expanduser()
-        selected = {}
-        for f in folder.iterdir():
-            if f.name.lower() in DLL_NAMES and f.is_file():
-                if f.name.lower() in selected:
-                    raise ValueError("Multiple DLLs with the same name")
-                if not 1_000_000 <= f.stat().st_size <= MAX_DLL_SIZE:
-                    raise ValueError("Invalid DLL size")
-                selected[f.name.lower()] = f
-        if set(selected) != set(DLL_NAMES):
-            raise ValueError("Choose the folder containing both FSR DLLs")
-        self._runtime_dir().mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=self._runtime_dir()) as temp:
-            archive = Path(temp) / "libraries.zip"
-            with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
-                for name, f in selected.items():
-                    z.write(f, name)
-            return self._import_fsr4_zip(str(archive))
-
-    async def import_fsr4_folder(self, folder: str) -> dict:
-        try:
-            async with self._generator_lock():
-                result = await asyncio.to_thread(self._import_fsr4_folder, str(folder))
-                return await asyncio.to_thread(self._apply_import_to_lite_games, result)
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
-
     def _extract_fsr4_driver(self, driver: str) -> dict:
         from fsr4_extract import extract_driver
         archive = extract_driver(Path(driver), self._runtime_dir() / "fsr4-archives",

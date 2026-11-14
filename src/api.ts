@@ -187,4 +187,3 @@ export type Fsr4Library = Result & { available?: boolean; version?: string | nul
 export const getFsr4Library = callable<[], Fsr4Library>("get_fsr4_library");
 export const importFsr4Libraries = callable<[archive: string], Result & { version?: string }>("import_fsr4_libraries");
 export const extractFsr4Driver = callable<[driver: string], Result>("extract_fsr4_driver");
-export const importFsr4Folder = callable<[folder: string], Result>("import_fsr4_folder");

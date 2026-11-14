@@ -48,8 +48,7 @@ cryptographic publisher signature. The driver installer is never executed and no
 On SteamOS/Linux, a missing 7-Zip is downloaded as a portable tool from its official release, checked against a
 pinned SHA-256, and kept in plugin data; no sudo or writable system partition is needed.
 
-Alternatively, **Import libraries from ZIP** accepts both DLLs together (nested folders are fine), or
-**Import a folder with both DLLs** accepts files you extracted manually. Mixed versions, duplicate DLLs,
+Alternatively, **Import libraries from ZIP** accepts both DLLs together (nested folders are fine). Mixed versions, duplicate DLLs,
 unsafe ZIP paths and files without Lite markers are rejected. Importing a newer pair uses the same buttons;
 there is no fixed DLL hash/version whitelist. Your library survives plugin updates.
 

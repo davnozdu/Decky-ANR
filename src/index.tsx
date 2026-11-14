@@ -49,7 +49,6 @@ import {
   getFsr4Library,
   importFsr4Libraries,
   extractFsr4Driver,
-  importFsr4Folder,
   Fsr4Library,
   LsfgProfile,
   LsfgStatus,
@@ -1380,18 +1379,18 @@ function Fsr4Libraries({ onImported }: { onImported: () => void }) {
     try { setLibrary(await getFsr4Library()); } catch (e) { toast(errorText(e)); }
   }, []);
   useEffect(() => void load(), [load]);
-  const importFiles = async (kind: "driver" | "zip" | "folder") => {
+  const importFiles = async (kind: "driver" | "zip") => {
     let path: string;
     try {
-      const file = await openFilePicker(kind === "folder" ? FileSelectionType.FOLDER : FileSelectionType.FILE,
-        library?.home || "/home", kind !== "folder", true, undefined,
-        kind === "folder" ? undefined : [kind === "driver" ? "exe" : "zip"], false, false);
+      const file = await openFilePicker(FileSelectionType.FILE,
+        library?.home || "/home", true, true, undefined,
+        [kind === "driver" ? "exe" : "zip"], false, false);
       path = file.realpath || file.path;
     } catch { return; }
     setBusy(true);
     try {
       const result = await (kind === "driver" ? extractFsr4Driver(path)
-        : kind === "folder" ? importFsr4Folder(path) : importFsr4Libraries(path));
+        : importFsr4Libraries(path));
       toast(result.message || result.status);
       if (result.status === "success") { await load(); onImported(); }
     } catch (e) { toast(errorText(e)); }
@@ -1411,11 +1410,6 @@ function Fsr4Libraries({ onImported }: { onImported: () => void }) {
         <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("zip")}
           description="Already extracted? Choose a ZIP containing amdxcffx64.dll and amdvkffx64.dll. For a new game, choose FSR 4 Lite in Upscaler after importing.">
           Import libraries from ZIP
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={() => void importFiles("folder")}>
-          Import a folder with both DLLs
         </ButtonItem>
       </PanelSectionRow>
     </PanelSection>

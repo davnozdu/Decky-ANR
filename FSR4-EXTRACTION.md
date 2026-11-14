@@ -8,7 +8,7 @@
 2. In the plugin, open **FSR 4 libraries → Extract FSR 4 libraries from driver (.exe)** and select the file.
 3. Wait for extraction/import, then choose the game → **Upscaler → FSR 4 Lite (INT8)**.
 
-You can instead select **Import libraries from ZIP** or **Import a folder with both DLLs**.
+You can instead select **Import libraries from ZIP**.
 Both `amdxcffx64.dll` and `amdvkffx64.dll` are required, with matching versions and Lite model markers.
 When updating the same way, closed games already using Lite get the new files automatically. Close a running
 game and select Lite again to update it. Existing generator and render-quality settings are preserved.
@@ -56,7 +56,7 @@ Windows launcher is provided but has not been tested on Windows.
 ## Кратко по-русски
 
 Проще всего выбрать скачанный `.exe` драйвера в самом плагине: **FSR 4 libraries → Extract FSR 4 libraries
-from driver (.exe)**. Плагин извлечёт и примет библиотеки автоматически. Ручной вариант — импорт ZIP или папки
+from driver (.exe)**. Плагин извлечёт и примет библиотеки автоматически. Ручной вариант — импорт ZIP
 с двумя DLL. Для новой игры после импорта выберите **FSR 4 Lite (INT8)**.
 
 Отдельно: распакуйте **FSR4-Extractor.zip**, откройте терминал в папке `FSR4-Extractor` и выполните команду выше,

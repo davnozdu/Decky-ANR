@@ -92,9 +92,3 @@ class Imports(unittest.TestCase):
         self.assertEqual(self.p._read_ini_sections(self.ini)[('FSR', 'Fsr4Model')], '3')
         self.assertEqual(self.p._read_ini_sections(self.ini)[('FSR', 'Fsr4EnableWatermark')], 'false')
 
-    def test_manual_folder(self):
-        folder = self.root / 'manual'; folder.mkdir()
-        for n in DLL_NAMES: (folder / n).write_bytes(dll())
-        result = asyncio.run(self.p.import_fsr4_folder(str(folder)))
-        self.assertEqual(result['status'], 'success', result)
-        self.assertIsNotNone(self.p._local_fsr4_source())

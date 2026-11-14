@@ -1,6 +1,6 @@
 {
   "name": "decky-framegen-hub",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Choose a frame generator per game (ANR FG or XeFG), with OptiScaler upscalers and per-game profiles, for Proton games.",
   "type": "module",
   "scripts": {
