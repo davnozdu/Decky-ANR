@@ -8,7 +8,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'out'
 OUT.mkdir(exist_ok=True)
-version = os.environ.get('ANR_VERSION', 'V.B15')
+version = os.environ.get('ANR_VERSION', 'V.B16')
 
 def check_zip(data, depth=0):
     with zipfile.ZipFile(io.BytesIO(data)) as z:

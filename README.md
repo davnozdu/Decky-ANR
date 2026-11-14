@@ -38,6 +38,14 @@ upstream intends.
 
 Based on the structure of [Decky-Framegen](https://github.com/xXJSONDeruloXx/Decky-Framegen).
 
+## Bundled ANR FG V.B16 (0.2.5)
+
+The bundled full/add-on packages now use [ANR FG V.B16](https://github.com/apex-compute/ANR/releases/tag/FG-V.B16).
+Upstream reports new model weights that reduce third-person driving artifacts (rear-car doubling/tearing,
+road flicker and bottom-edge lines), and an Apex Compute-signed provider DLL. The OptiScaler integration is
+unchanged. Existing FSR Lite/LS libraries, generator choice and profiles are preserved on game updates.
+The benchmark numbers below remain V.B15 measurements; V.B16 has not been benchmarked here yet.
+
 ## Steam language and Lossless Scaling imports (0.2.4)
 
 The UI follows **Steam's language** automatically: Russian Steam → Russian UI; English Steam → English UI.
@@ -218,4 +226,4 @@ npm run build
 
 Plugin code: BSD-3-Clause. ANR FG is © Apex Compute and distributed as published in its GitHub releases.
 OptiScaler (inside the ANR FG full package) is GPL-3.0; the source of the bundled build (Apex OptiScaler, upstream
-`d6b02459`) is [anr-fg-V.B15-full-optiscaler-source.zip](https://github.com/apex-compute/ANR/releases/download/FG-V.B15/anr-fg-V.B15-full-optiscaler-source.zip).
+`d6b02459`) is [anr-fg-V.B16-full-optiscaler-source.zip](https://github.com/apex-compute/ANR/releases/download/FG-V.B16/anr-fg-V.B16-full-optiscaler-source.zip).

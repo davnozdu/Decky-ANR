@@ -2,7 +2,7 @@
 # Public release: explicit allowlist, with nested ZIP checks for private AMD DLLs.
 set -eu
 cd "$(dirname "$0")"
-version=${ANR_VERSION:-V.B15}
+version=${ANR_VERSION:-V.B16}
 mkdir -p bin
 for kind in full addon; do
     f="bin/anr-fg-$version-$kind.zip"
