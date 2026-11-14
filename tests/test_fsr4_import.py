@@ -91,4 +91,3 @@ class Imports(unittest.TestCase):
         self.assertEqual(result['updated_games'], ['Test game'])
         self.assertEqual(self.p._read_ini_sections(self.ini)[('FSR', 'Fsr4Model')], '3')
         self.assertEqual(self.p._read_ini_sections(self.ini)[('FSR', 'Fsr4EnableWatermark')], 'false')
-
